@@ -237,6 +237,163 @@ function applyOrthography(ipa, orthoRules) {
   return result;
 }
 
+// ─── Word Generator Engine ────────────────────────────────────────────────────
+const NASALS     = new Set(['m','ɱ','n','ɳ','ɲ','ŋ','ɴ']);
+const FRICATIVES = new Set(['ɸ','β','f','v','θ','ð','s','z','ʃ','ʒ','ʂ','ʐ','ç','ʝ','x','ɣ','χ','ʁ','ħ','ʕ','h','ɦ','ɬ','ɮ']);
+const LIQUIDS    = new Set(['l','ɭ','ʎ','ʟ','r','ɹ','ɻ','ɾ','ɽ','ʀ','ʁ']);
+
+function pickRandom(arr) {
+  if (!arr || !arr.length) return '';
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function getTemplateWeight(template) {
+  const len = template.replace(/[()]/g, '').length;
+  switch(len) {
+    case 1: return 3;
+    case 2: return 5;
+    case 3: return 3;
+    case 4: return 1;
+    default: return 1;
+  }
+}
+
+function pickWeightedTemplate(templates) {
+  const weighted = templates.map(t => ({ template: t, weight: getTemplateWeight(t) }));
+  const totalWeight = weighted.reduce((sum, w) => sum + w.weight, 0);
+  let roll = Math.random() * totalWeight;
+  for (const w of weighted) {
+    roll -= w.weight;
+    if (roll <= 0) return w.template;
+  }
+  return templates[0];
+}
+
+function pickSyllableCount(min, max) {
+  const weights = [];
+  for (let n = min; n <= max; n++) weights.push(Math.pow(1/1.5, n));
+  const total = weights.reduce((a, b) => a + b, 0);
+  let roll = Math.random() * total;
+  for (let i = 0; i < weights.length; i++) {
+    roll -= weights[i];
+    if (roll <= 0) return min + i;
+  }
+  return min;
+}
+
+function realizeSyllable(template, consonants, vowels, onsetClusters, codaClusters) {
+  // 1. Resolve optionals
+  let resolved = '';
+  let i = 0;
+  while (i < template.length) {
+    if (template[i] === '(' && template.indexOf(')', i) !== -1) {
+      const close = template.indexOf(')', i);
+      if (Math.random() < 0.5) resolved += template.slice(i + 1, close);
+      i = close + 1;
+    } else {
+      resolved += template[i++];
+    }
+  }
+
+  // 2. Find first V to split onset/nucleus/coda
+  const firstV = resolved.indexOf('V');
+  const lastV  = resolved.lastIndexOf('V');
+  if (firstV === -1) {
+    // no vowel at all — just resolve consonants
+    return resolved.split('').map(ch => resolveSymbol(ch, consonants, vowels)).join('');
+  }
+
+  const onset = resolved.slice(0, firstV);
+  const coda  = resolved.slice(lastV + 1);
+  const mid   = resolved.slice(firstV, lastV + 1); // V + any inner C+V groups
+
+  // 3. Resolve onset, handling CC clusters
+  let result = '';
+  result += resolveConsonantZone(onset, consonants, onsetClusters);
+
+  // 4. Resolve V / inner segments
+  for (let j = 0; j < mid.length; j++) {
+    result += resolveSymbol(mid[j], consonants, vowels);
+  }
+
+  // 5. Resolve coda, handling CC clusters
+  result += resolveConsonantZone(coda, consonants, codaClusters);
+
+  return result;
+}
+
+function resolveConsonantZone(zone, consonants, clusters) {
+  if (!zone) return '';
+  // Replace pairs of C with a cluster when available
+  if (clusters && clusters.length && zone.includes('CC')) {
+    return zone.replace('CC', pickRandom(clusters));
+  }
+  return zone.split('').map(ch => resolveSymbol(ch, consonants, [])).join('');
+}
+
+function resolveSymbol(ch, consonants, vowels) {
+  if (ch === 'V') return pickRandom(vowels) || '';
+  if (ch === 'C') return pickRandom(consonants) || '';
+  if (ch === 'N') {
+    const nasals = consonants.filter(c => NASALS.has(c));
+    return pickRandom(nasals.length ? nasals : consonants) || '';
+  }
+  if (ch === 'F') {
+    const frics = consonants.filter(c => FRICATIVES.has(c));
+    return pickRandom(frics.length ? frics : consonants) || '';
+  }
+  if (ch === 'L') {
+    const liq = consonants.filter(c => LIQUIDS.has(c));
+    return pickRandom(liq.length ? liq : consonants) || '';
+  }
+  return ch; // literal character
+}
+
+function generateWord(phonology, orthoRules, options = {}) {
+  const { minSyllables = 1, maxSyllables = 4 } = options;
+  const syllableCount = pickSyllableCount(minSyllables, maxSyllables);
+
+  let vowelPool = phonology.vowels;
+  if (phonology.vowelHarmony && phonology.vowelGroups && phonology.vowelGroups.length) {
+    const group = pickRandom(phonology.vowelGroups);
+    vowelPool = group.filter(v => phonology.vowels.includes(v));
+    if (!vowelPool.length) vowelPool = phonology.vowels;
+  }
+
+  const syllables = [];
+  for (let i = 0; i < syllableCount; i++) {
+    const template = pickWeightedTemplate(phonology.syllableTemplates);
+    syllables.push(realizeSyllable(template, phonology.consonants, vowelPool, phonology.onsetClusters || [], phonology.codaClusters || []));
+  }
+
+  const ipa = syllables.join('');
+  const spelling = applyOrthography(ipa, orthoRules);
+  return { ipa, spelling };
+}
+
+function generateUniqueWords(phonology, orthoRules, count, existingWords, options) {
+  const existingSpellings = new Set(existingWords.map(w => w.spelling.toLowerCase()));
+  const existingIPA = new Set(existingWords.map(w => (w.pronunciation || '').toLowerCase()).filter(Boolean));
+  const results = [];
+  let attempts = 0;
+  const maxAttempts = count * 20;
+
+  while (results.length < count && attempts < maxAttempts) {
+    attempts++;
+    const word = generateWord(phonology, orthoRules, options);
+    if (!word.ipa) continue;
+    const spLower  = word.spelling.toLowerCase();
+    const ipaLower = word.ipa.toLowerCase();
+    if (existingSpellings.has(spLower) || existingIPA.has(ipaLower)) continue;
+    if (results.some(r => r.spelling.toLowerCase() === spLower)) continue;
+    existingSpellings.add(spLower);
+    existingIPA.add(ipaLower);
+    results.push(word);
+  }
+
+  return { words: results, exhausted: results.length < count };
+}
+
 function insertAtCursor(inputEl, text) {
   const s = inputEl.selectionStart ?? inputEl.value.length;
   const e = inputEl.selectionEnd   ?? inputEl.value.length;
@@ -1209,6 +1366,211 @@ class CreateDictModal extends obsidian.Modal {
   onClose() { this.contentEl.empty(); }
 }
 
+// ─── Word Generator Modal ─────────────────────────────────────────────────────
+class WordGeneratorModal extends obsidian.Modal {
+  constructor(app, dict, onGenerate) {
+    super(app);
+    this.dict = dict;
+    this.onGenerate = onGenerate;
+    this.count = 20;
+    this.minSyll = 1;
+    this.maxSyll = 3;
+    this.assignPOS = '';
+    this.assignThesaurus = false;
+    this.preview = [];
+  }
+
+  onOpen() {
+    const { contentEl, modalEl } = this;
+    modalEl.style.width = '680px';
+    modalEl.style.maxWidth = '95vw';
+    contentEl.empty();
+    contentEl.addClass('conlang-modal');
+    contentEl.createEl('h2', { text: 'Generate Words' });
+
+    // ── Parameters ──
+    const params = contentEl.createDiv('conlang-gen-params');
+
+    const row = (label) => {
+      const s = new obsidian.Setting(params).setName(label);
+      s.settingEl.style.borderBottom = 'none';
+      s.settingEl.style.padding = '4px 0';
+      return s;
+    };
+
+    row('Number of words').addText(t => {
+      t.inputEl.type = 'number'; t.inputEl.min = '1'; t.inputEl.max = '500';
+      t.setValue(String(this.count));
+      t.onChange(v => this.count = Math.min(500, Math.max(1, parseInt(v) || 1)));
+    });
+
+    let maxSyllInput;
+    row('Min syllables').addText(t => {
+      t.inputEl.type = 'number'; t.inputEl.min = '1'; t.inputEl.max = '8';
+      t.setValue(String(this.minSyll));
+      t.onChange(v => { this.minSyll = Math.min(8, Math.max(1, parseInt(v) || 1)); });
+    });
+    row('Max syllables').addText(t => {
+      t.inputEl.type = 'number'; t.inputEl.min = '1'; t.inputEl.max = '8';
+      t.setValue(String(this.maxSyll));
+      maxSyllInput = t.inputEl;
+      t.onChange(v => { this.maxSyll = Math.min(8, Math.max(1, parseInt(v) || 1)); });
+    });
+
+    const POS_OPTIONS = ['','noun','verb','adjective','adverb','pronoun','preposition','conjunction','interjection','determiner','particle','other'];
+    row('Part of Speech').addDropdown(d => {
+      POS_OPTIONS.forEach(p => d.addOption(p, p || '(any)'));
+      d.setValue(this.assignPOS);
+      d.onChange(v => this.assignPOS = v);
+    });
+
+    row('Auto-assign thesaurus').addToggle(t => {
+      t.setValue(this.assignThesaurus);
+      t.onChange(v => this.assignThesaurus = v);
+    });
+
+    // ── Action buttons (top) ──
+    const topBtns = contentEl.createDiv('conlang-gen-actions');
+    const previewBtn = topBtns.createEl('button', { text: 'Preview' });
+    const genBtn = topBtns.createEl('button', { text: 'Generate & Add', cls: 'mod-cta' });
+
+    // ── Counter ──
+    const counter = contentEl.createDiv('conlang-gen-count');
+    counter.textContent = '';
+
+    // ── Preview table ──
+    const previewWrap = contentEl.createDiv('conlang-gen-preview');
+    const table = previewWrap.createEl('table', { cls: 'conlang-gen-table' });
+    const thead = table.createEl('thead').createEl('tr');
+    ['✓','Spelling','IPA','POS','Translation'].forEach(h => thead.createEl('th', { text: h }));
+    const tbody = table.createEl('tbody');
+
+    const updateCounter = () => {
+      const checked = this.preview.filter(w => w._checked).length;
+      counter.textContent = `${checked} / ${this.preview.length} words selected`;
+    };
+
+    const renderPreview = () => {
+      tbody.empty();
+      this.preview.forEach((word, idx) => {
+        const tr = tbody.createEl('tr');
+
+        // Checkbox
+        const chk = tr.createEl('td').createEl('input', { type: 'checkbox' });
+        chk.checked = word._checked !== false;
+        word._checked = chk.checked;
+        chk.addEventListener('change', () => { word._checked = chk.checked; updateCounter(); });
+
+        // Spelling (editable)
+        const spInp = tr.createEl('td').createEl('input', { type: 'text', value: word.spelling });
+        spInp.className = 'conlang-gen-table input[type="text"]';
+        spInp.style.cssText = 'border:none;background:transparent;width:100%;font-size:13px;color:var(--text-normal);';
+        spInp.addEventListener('input', () => { word.spelling = spInp.value; });
+
+        // IPA (read-only)
+        tr.createEl('td', { text: word.ipa });
+
+        // POS
+        const posInp = tr.createEl('td').createEl('input', { type: 'text', value: word.pos || '' });
+        posInp.style.cssText = 'border:none;background:transparent;width:100%;font-size:13px;color:var(--text-normal);';
+        posInp.addEventListener('input', () => { word.pos = posInp.value; });
+
+        // Translation
+        tr.createEl('td', { text: word.translation || '' });
+      });
+      updateCounter();
+    };
+
+    const runGenerate = () => {
+      if (this.minSyll > this.maxSyll) this.maxSyll = this.minSyll;
+      const phon = this.dict.phonology || {};
+      const ortho = this.dict.orthography || [];
+      const options = { minSyllables: this.minSyll, maxSyllables: this.maxSyll };
+      const { words, exhausted } = generateUniqueWords(phon, ortho, this.count, this.dict.words || [], options);
+
+      // Optionally assign thesaurus entries
+      if (this.assignThesaurus) {
+        const fullThes = getFullThesaurus(this.dict);
+        const usedEntries = new Set((this.dict.words || []).map(w => (w.thesaurusEntry || '').toLowerCase()).filter(Boolean));
+        const available = [];
+        for (const cat of fullThes) {
+          for (const entry of cat.entries) {
+            if (!usedEntries.has(entry.toLowerCase())) available.push({ cat: cat.cat, entry });
+          }
+        }
+        // Shuffle
+        for (let i = available.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [available[i], available[j]] = [available[j], available[i]];
+        }
+        words.forEach((w, i) => {
+          if (i < available.length) {
+            w.translation = available[i].entry;
+            w.thesaurusCategory = available[i].cat;
+            w.thesaurusEntry = available[i].entry;
+          }
+        });
+      }
+
+      this.preview = words.map(w => ({
+        ...w,
+        pos: this.assignPOS || '',
+        _checked: true,
+        thesaurusCategory: w.thesaurusCategory || '',
+        thesaurusEntry: w.thesaurusEntry || '',
+        translation: w.translation || '',
+      }));
+
+      renderPreview();
+
+      if (exhausted) {
+        new obsidian.Notice(`Generated ${words.length}/${this.count} words. Phonology may be too restrictive for more unique words.`);
+      }
+    };
+
+    previewBtn.addEventListener('click', () => runGenerate());
+
+    genBtn.addEventListener('click', () => {
+      const selected = this.preview.filter(w => w._checked !== false);
+      if (!selected.length) { new obsidian.Notice('No words selected.'); return; }
+      const wordObjs = selected.map(w => ({
+        id: genId(),
+        spelling: w.spelling,
+        pronunciation: w.ipa,
+        pos: w.pos || '',
+        translation: w.translation || '',
+        definition: '',
+        example: '',
+        root: '',
+        etymology: 'Generated',
+        gender: '',
+        thesaurusCategory: w.thesaurusCategory || '',
+        thesaurusEntry: w.thesaurusEntry || '',
+        ancestorWordId: null,
+        conjugationForms: {},
+        declensionForms: {},
+        customFields: {},
+        createdAt: new Date().toISOString(),
+      }));
+      this.onGenerate(wordObjs);
+      this.close();
+    });
+
+    // Regenerate button (below table)
+    const regenBtn = contentEl.createEl('button', { text: 'Regenerate' });
+    regenBtn.style.marginTop = '8px';
+    regenBtn.addEventListener('click', () => runGenerate());
+
+    // Auto-preview on open if phonology is ready
+    const phon = this.dict.phonology || {};
+    if (phon.consonants && phon.consonants.length && phon.vowels && phon.vowels.length && phon.syllableTemplates && phon.syllableTemplates.length) {
+      runGenerate();
+    }
+  }
+
+  onClose() { this.contentEl.empty(); }
+}
+
 // ─── Dictionary Sidebar View ──────────────────────────────────────────────────
 class DictionaryView extends obsidian.ItemView {
   constructor(leaf, plugin) {
@@ -1736,6 +2098,31 @@ class DictionaryView extends obsidian.ItemView {
     notesInp.rows = 4;
     notesInp.value = phon.phonotacticNotes || '';
     notesInp.addEventListener('input', async () => { phon.phonotacticNotes = notesInp.value; await save(); });
+
+    // ── Section G: Word Generator ──
+    const secG = el.createDiv('conlang-phon-section');
+    secG.createEl('h3', { text: 'Word Generator' });
+    secG.createEl('p', { text: 'Generate random words using the phonology defined above.', cls: 'conlang-phon-count' });
+    const genBtn = secG.createEl('button', { text: 'Generate Words…', cls: 'mod-cta' });
+    const phonReady = phon.consonants.length && phon.vowels.length && phon.syllableTemplates.length;
+    if (!phonReady) {
+      genBtn.disabled = true;
+      genBtn.title = 'Define at least consonants, vowels, and one syllable template first.';
+    }
+    genBtn.addEventListener('click', () => {
+      if (!phon.consonants.length || !phon.vowels.length || !phon.syllableTemplates.length) {
+        new obsidian.Notice('Define at least consonants, vowels, and one syllable template before generating.');
+        return;
+      }
+      new WordGeneratorModal(this.app, this.dict, async (words) => {
+        words.forEach(w => this.dict.words.push(w));
+        await this.plugin.storage.save(this.dict);
+        this.plugin.rebuildHoverIndex();
+        this.tab = 'words';
+        this.render();
+        new obsidian.Notice(`Generated ${words.length} word${words.length === 1 ? '' : 's'}.`);
+      }).open();
+    });
   }
 
   // ── Conjugation / Declension actions ──
@@ -2590,6 +2977,19 @@ class ConlangDictionaryPlugin extends obsidian.Plugin {
 .conlang-ortho-table th { text-align:left; font-size:12px; color:var(--text-muted); padding:4px; }
 .conlang-ortho-table td { padding:2px 4px; }
 .conlang-ortho-table input { width:80px; }
+
+/* ── Word Generator modal ── */
+.conlang-gen-params { margin-bottom:16px; }
+.conlang-gen-params .setting-item { border-bottom:none; padding:4px 0; }
+.conlang-gen-preview { max-height:400px; overflow-y:auto; border:1px solid var(--background-modifier-border); border-radius:6px; }
+.conlang-gen-table { width:100%; border-collapse:collapse; font-size:13px; }
+.conlang-gen-table th { position:sticky; top:0; background:var(--background-secondary); padding:6px 8px; text-align:left; font-size:11px; color:var(--text-muted); text-transform:uppercase; }
+.conlang-gen-table td { padding:4px 8px; border-bottom:1px solid var(--background-modifier-border); }
+.conlang-gen-table tr:hover td { background:var(--background-modifier-hover); }
+.conlang-gen-table input[type="text"] { border:none; background:transparent; width:100%; font-size:13px; color:var(--text-normal); }
+.conlang-gen-table input[type="text"]:focus { outline:1px solid var(--interactive-accent); border-radius:2px; }
+.conlang-gen-count { font-size:12px; color:var(--text-muted); margin:8px 0; }
+.conlang-gen-actions { display:flex; gap:8px; margin-top:12px; }
 `;
 
 
