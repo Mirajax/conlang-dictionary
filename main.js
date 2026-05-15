@@ -173,6 +173,70 @@ const DIGRAPHS = {
   db:['ʣ'], ll:['ɫ'], ny:['ɲ'], sh:['ʃ'], zh:['ʒ'], ch:['ʧ','č','ĉ'],
 };
 
+// ─── Phonology Constants ─────────────────────────────────────────────────────
+const DEFAULT_SPELLING = {
+  'ʃ':'sh','ʒ':'zh','tʃ':'ch','dʒ':'j',
+  'θ':'th','ð':'dh','ŋ':'ng','ɲ':'ny',
+  'ʔ':"'",'j':'y','x':'kh','ɣ':'gh',
+  'ç':'hy','χ':'kh','ʁ':'r','ħ':'hh',
+  'ʕ':"'",'ɸ':'ph','β':'bh','ɬ':'lh',
+  'ɹ':'r','ɾ':'r','ʋ':'v','ɻ':'r',
+  'w':'w',
+  'ɛ':'e','ɔ':'o','æ':'ae','ɑ':'a',
+  'ɒ':'o','ə':'e','ɪ':'i','ʊ':'u',
+  'ø':'ö','y':'ü','œ':'oe','ʌ':'u',
+};
+
+const LANGUAGE_PRESETS = {
+  'Latin': {
+    consonants: ['p','b','t','d','k','g','kʷ','gʷ','m','n','f','s','h','r','l','j','w'],
+    vowels: ['a','e','i','o','u','aː','eː','iː','oː','uː'],
+    syllableTemplates: ['CV','CVC','CCVC','VC'],
+    onsetClusters: ['pl','bl','tr','dr','kr','gr','fl','kl','gl','sp','st','sk'],
+    codaClusters: ['nt','nd','ns','rs','rn','rt','ks','kt','lk'],
+  },
+  'Japanese': {
+    consonants: ['k','g','s','z','t','d','n','h','b','p','m','r','j','w'],
+    vowels: ['a','i','u','e','o'],
+    syllableTemplates: ['CV','V','CjV'],
+    onsetClusters: [],
+    codaClusters: ['n'],
+  },
+  'Arabic': {
+    consonants: ['b','t','θ','d','ð','k','q','ʔ','f','s','z','ʃ','x','ɣ','ħ','ʕ','h','m','n','r','l','j','w'],
+    vowels: ['a','i','u','aː','iː','uː'],
+    syllableTemplates: ['CV','CVC','CVCC'],
+    onsetClusters: [],
+    codaClusters: ['nt','nd','rk','lk','ft'],
+  },
+  'Hawaiian': {
+    consonants: ['p','k','ʔ','h','m','n','l','w'],
+    vowels: ['a','e','i','o','u','aː','eː','iː','oː','uː'],
+    syllableTemplates: ['CV','V'],
+    onsetClusters: [],
+    codaClusters: [],
+  },
+  'Finnish': {
+    consonants: ['p','t','k','d','m','n','ŋ','s','h','r','l','j','v'],
+    vowels: ['a','e','i','o','u','y','ä','ö'],
+    syllableTemplates: ['CV','CVC','CVCC','VC'],
+    onsetClusters: [],
+    codaClusters: ['nt','ns','rs','rk','lk','mp','st','ts'],
+    vowelHarmony: true,
+    vowelGroups: [['a','o','u'], ['ä','ö','y']],
+  },
+};
+
+function applyOrthography(ipa, orthoRules) {
+  if (!orthoRules || !orthoRules.length) return ipa;
+  const sorted = [...orthoRules].sort((a, b) => b.ipa.length - a.ipa.length);
+  let result = ipa;
+  for (const rule of sorted) {
+    result = result.split(rule.ipa).join(rule.spelling);
+  }
+  return result;
+}
+
 function insertAtCursor(inputEl, text) {
   const s = inputEl.selectionStart ?? inputEl.value.length;
   const e = inputEl.selectionEnd   ?? inputEl.value.length;
@@ -264,6 +328,94 @@ class IPAChartModal extends obsidian.Modal {
       const grid = sec.createDiv('conlang-sym-grid');
       syms.forEach(s => this._symBtn(grid, s));
     });
+  }
+
+  onClose() { this.contentEl.empty(); }
+}
+
+// ─── IPA Picker Modal (Phonology inventory selection) ────────────────────────
+class IPAPickerModal extends obsidian.Modal {
+  constructor(app, currentConsonants, currentVowels, onSelect) {
+    super(app);
+    this.selC = new Set(currentConsonants);
+    this.selV = new Set(currentVowels);
+    this.onSelect = onSelect;
+  }
+
+  onOpen() {
+    const { contentEl, modalEl } = this;
+    modalEl.style.maxWidth = '900px';
+    contentEl.empty();
+    contentEl.createEl('h2', { text: 'IPA Phoneme Picker' });
+    contentEl.createEl('p', { text: 'Click phonemes to add/remove them from your inventory.', cls: 'conlang-hint' });
+
+    // ── Consonants ──
+    contentEl.createEl('h3', { text: 'Consonants' });
+    const table = contentEl.createEl('table', { cls: 'conlang-ortho-table' });
+    const thead = table.createEl('thead').createEl('tr');
+    thead.createEl('th', { text: '' });
+    IPA_CONSONANTS.cols.forEach(c => thead.createEl('th', { text: c, cls: 'conlang-ipa-hdr' }));
+
+    const tbody = table.createEl('tbody');
+    IPA_CONSONANTS.rows.forEach(({ name, cells }) => {
+      const tr = tbody.createEl('tr');
+      tr.createEl('td', { text: name, cls: 'conlang-ipa-hdr' });
+      cells.forEach(cell => {
+        const td = tr.createEl('td');
+        if (cell === null) { td.style.background = 'var(--background-modifier-border)'; return; }
+        const [vl, vd] = cell;
+        [vl, vd].forEach(sym => {
+          if (!sym) return;
+          const btn = td.createEl('span', { text: sym, cls: 'conlang-ipa-cell' + (this.selC.has(sym) ? ' is-selected' : '') });
+          btn.addEventListener('click', () => {
+            if (this.selC.has(sym)) this.selC.delete(sym); else this.selC.add(sym);
+            btn.toggleClass('is-selected', this.selC.has(sym));
+            this._notify();
+          });
+        });
+      });
+    });
+
+    // ── Retroflex & Other ──
+    Object.entries(IPA_OTHER).slice(0, 1).forEach(([section, syms]) => {
+      const row = contentEl.createDiv({ cls: 'conlang-phon-section' });
+      row.createEl('strong', { text: section + ': ' });
+      syms.forEach(sym => {
+        const btn = row.createEl('span', { text: sym, cls: 'conlang-ipa-cell' + (this.selC.has(sym) ? ' is-selected' : '') });
+        btn.addEventListener('click', () => {
+          if (this.selC.has(sym)) this.selC.delete(sym); else this.selC.add(sym);
+          btn.toggleClass('is-selected', this.selC.has(sym));
+          this._notify();
+        });
+      });
+    });
+
+    // ── Vowels ──
+    contentEl.createEl('h3', { text: 'Vowels' });
+    const vWrap = contentEl.createDiv('conlang-ipa-grid');
+    const vHdr = vWrap.createDiv('conlang-vowel-axis');
+    vHdr.createEl('span');
+    ['Front', 'Central', 'Back'].forEach(t => vHdr.createEl('span', { text: t, cls: 'conlang-vowel-col-lbl' }));
+    IPA_VOWELS.forEach(({ label, syms }) => {
+      const row = vWrap.createDiv('conlang-vowel-row');
+      row.createEl('span', { text: label, cls: 'conlang-vowel-lbl' });
+      const cells = row.createDiv('conlang-vowel-syms');
+      syms.forEach(sym => {
+        if (!sym) { cells.createEl('span', { cls: 'conlang-sym-ph' }); return; }
+        const btn = cells.createEl('span', { text: sym, cls: 'conlang-ipa-cell' + (this.selV.has(sym) ? ' is-selected' : '') });
+        btn.addEventListener('click', () => {
+          if (this.selV.has(sym)) this.selV.delete(sym); else this.selV.add(sym);
+          btn.toggleClass('is-selected', this.selV.has(sym));
+          this._notify();
+        });
+      });
+    });
+
+    contentEl.createEl('button', { text: 'Done', cls: 'mod-cta' }).addEventListener('click', () => this.close());
+  }
+
+  _notify() {
+    this.onSelect([...this.selC], [...this.selV]);
   }
 
   onClose() { this.contentEl.empty(); }
@@ -830,6 +982,17 @@ class DictionaryStorage {
       useCases: false, parentDictionary: null,
       useGenders: false, genders: [],
       customThesaurus: [],
+      phonology: {
+        consonants: [],
+        vowels: [],
+        syllableTemplates: [],
+        onsetClusters: [],
+        codaClusters: [],
+        vowelHarmony: false,
+        vowelGroups: [],
+        phonotacticNotes: ''
+      },
+      orthography: [],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
@@ -1115,6 +1278,7 @@ class DictionaryView extends obsidian.ItemView {
     const TABS = [
       ['words',    `Words (${this.dict.words.length})`],
       ['roots',    `Roots (${this.dict.roots.length})`],
+      ['phonology','Phonology'],
       ['sounds',   `Sounds (${(this.dict.soundChanges||[]).length})`],
       ['paradigms',`Paradigms (${(this.dict.paradigms||[]).length})`],
     ];
@@ -1171,6 +1335,7 @@ class DictionaryView extends obsidian.ItemView {
     this._listEl.empty();
     if (this.tab==='words') this._renderWords(this._listEl);
     else if (this.tab==='roots') this._renderRoots(this._listEl);
+    else if (this.tab==='phonology') this._renderPhonology(this._listEl);
     else if (this.tab==='sounds') this._renderSounds(this._listEl);
     else if (this.tab==='paradigms') this._renderParadigms(this._listEl);
   }
@@ -1331,13 +1496,18 @@ class DictionaryView extends obsidian.ItemView {
     const {from,to,env}=rule;
     if(!from) return word;
     try {
-      const V='[aeiouáéíóúàèìòùäëïöüâêîôûæœ]', C='[^aeiouáéíóúàèìòùäëïöüâêîôûæœ\\s]';
+      const phon = this.dict.phonology || {};
+      const vowels = (phon.vowels && phon.vowels.length)
+        ? phon.vowels.map(v => v.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).join('|')
+        : 'aeiouáéíóúàèìòùäëïöüâêîôûæœ';
+      const V = `(?:${vowels})`;
+      const C = `(?:(?!${vowels})[^\\s])`;
       const esc=s=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
       let pre='',post='';
       if(env){
         const parts=env.split('_');
-        pre=(parts[0]||'').replace('#','^(?:^|\\b)').replace('V',V).replace('C',C);
-        post=(parts[1]||'').replace('#','(?:\\b|$)').replace('V',V).replace('C',C);
+        pre=(parts[0]||'').replace('#','^(?:^|\\b)').replace(/V/g,V).replace(/C/g,C);
+        post=(parts[1]||'').replace('#','(?:\\b|$)').replace(/V/g,V).replace(/C/g,C);
       }
       const pat=new RegExp(`(${pre})(${esc(from)})(${post})`, 'gi');
       return word.replace(pat,`$1${to}$3`);
@@ -1388,6 +1558,184 @@ class DictionaryView extends obsidian.ItemView {
       sec.createEl('strong',{text:`[${p.type}] ${p.name}`});
       sec.createEl('span',{text:' — '+(p.slots||[]).map(s=>s.label||s.key).join(' · '),cls:'conlang-muted'});
     });
+  }
+
+  // ── Phonology Tab ──
+  _renderPhonology(el) {
+    const phon = this.dict.phonology = this.dict.phonology || {};
+    phon.consonants    = phon.consonants    || [];
+    phon.vowels        = phon.vowels        || [];
+    phon.syllableTemplates = phon.syllableTemplates || [];
+    phon.onsetClusters = phon.onsetClusters || [];
+    phon.codaClusters  = phon.codaClusters  || [];
+    if (phon.vowelHarmony === undefined) phon.vowelHarmony = false;
+    phon.vowelGroups   = phon.vowelGroups   || [];
+    if (phon.phonotacticNotes === undefined) phon.phonotacticNotes = '';
+    this.dict.orthography = this.dict.orthography || [];
+    const ortho = this.dict.orthography;
+    const save = () => this.plugin.storage.save(this.dict);
+
+    // ── Presets ──
+    const presetSec = el.createDiv('conlang-phon-section');
+    presetSec.createEl('h3', { text: 'Load Language Preset' });
+    const presetRow = presetSec.createDiv();
+    Object.keys(LANGUAGE_PRESETS).forEach(lang => {
+      presetRow.createEl('button', { text: lang, cls: 'conlang-phon-preset-btn' }).addEventListener('click', async () => {
+        const p = LANGUAGE_PRESETS[lang];
+        phon.consonants = [...p.consonants];
+        phon.vowels = [...p.vowels];
+        phon.syllableTemplates = [...p.syllableTemplates];
+        phon.onsetClusters = [...(p.onsetClusters || [])];
+        phon.codaClusters = [...(p.codaClusters || [])];
+        phon.vowelHarmony = p.vowelHarmony || false;
+        phon.vowelGroups = p.vowelGroups ? p.vowelGroups.map(g => [...g]) : [];
+        await save();
+        this.refreshList();
+      });
+    });
+
+    // ── Section A: Consonants ──
+    const secA = el.createDiv('conlang-phon-section');
+    secA.createEl('h3', { text: 'Consonants' });
+    const cntRow = secA.createDiv();
+    const cInp = cntRow.createEl('input', { type: 'text', cls: 'conlang-phon-input', placeholder: 'p b t d k g m n ŋ f v s z ʃ h l r j w' });
+    cInp.value = phon.consonants.join(' ');
+    const cCount = cntRow.createEl('div', { cls: 'conlang-phon-count', text: `${phon.consonants.length} consonants` });
+    cInp.addEventListener('input', async () => {
+      phon.consonants = cInp.value.split(/\s+/).filter(Boolean);
+      cCount.textContent = `${phon.consonants.length} consonants`;
+      await save();
+    });
+    secA.createEl('button', { text: 'IPA Picker', cls: 'conlang-phon-preset-btn' }).addEventListener('click', () => {
+      new IPAPickerModal(this.app, phon.consonants, phon.vowels, async (newC, newV) => {
+        phon.consonants = newC; phon.vowels = newV;
+        cInp.value = newC.join(' ');
+        cCount.textContent = `${newC.length} consonants`;
+        vInp.value = newV.join(' ');
+        vCount.textContent = `${newV.length} vowels`;
+        await save();
+      }).open();
+    });
+
+    // ── Section B: Vowels ──
+    const secB = el.createDiv('conlang-phon-section');
+    secB.createEl('h3', { text: 'Vowels' });
+    const vRow = secB.createDiv();
+    const vInp = vRow.createEl('input', { type: 'text', cls: 'conlang-phon-input', placeholder: 'a e i o u' });
+    vInp.value = phon.vowels.join(' ');
+    const vCount = vRow.createEl('div', { cls: 'conlang-phon-count', text: `${phon.vowels.length} vowels` });
+    vInp.addEventListener('input', async () => {
+      phon.vowels = vInp.value.split(/\s+/).filter(Boolean);
+      vCount.textContent = `${phon.vowels.length} vowels`;
+      await save();
+    });
+    const harmonyRow = secB.createDiv();
+    const harmonyChk = harmonyRow.createEl('input', { type: 'checkbox' });
+    harmonyChk.checked = phon.vowelHarmony;
+    harmonyRow.createEl('label', { text: ' Vowel harmony' });
+    harmonyChk.addEventListener('change', async () => {
+      phon.vowelHarmony = harmonyChk.checked;
+      secC.style.display = phon.vowelHarmony ? 'block' : 'none';
+      await save();
+    });
+
+    // ── Section C: Vowel Groups ──
+    const secC = el.createDiv('conlang-phon-section');
+    secC.style.display = phon.vowelHarmony ? 'block' : 'none';
+    secC.createEl('h3', { text: 'Vowel Groups' });
+    const drawGroups = () => {
+      secC.querySelectorAll('.conlang-phon-vgroup').forEach(n => n.remove());
+      phon.vowelGroups.forEach((grp, gi) => {
+        const row = secC.createDiv('conlang-phon-vgroup');
+        const inp = row.createEl('input', { type: 'text', cls: 'conlang-phon-input', value: grp.join(' '), placeholder: 'a o u' });
+        inp.style.width = '200px';
+        inp.addEventListener('input', async () => { phon.vowelGroups[gi] = inp.value.split(/\s+/).filter(Boolean); await save(); });
+        row.createEl('button', { text: '×', cls: 'conlang-icon-btn conlang-del-btn' }).addEventListener('click', async () => {
+          phon.vowelGroups.splice(gi, 1); await save(); drawGroups();
+        });
+      });
+    };
+    drawGroups();
+    secC.createEl('button', { text: '+ Add group' }).addEventListener('click', async () => {
+      phon.vowelGroups.push([]); await save(); drawGroups();
+    });
+
+    // ── Section D: Syllable Structure ──
+    const secD = el.createDiv('conlang-phon-section');
+    secD.createEl('h3', { text: 'Syllable Structure' });
+    const tplWrap = secD.createDiv('conlang-phon-templates');
+    const drawTemplates = () => {
+      tplWrap.empty();
+      phon.syllableTemplates.forEach((tpl, ti) => {
+        const chip = tplWrap.createDiv('conlang-phon-tpl');
+        chip.createEl('span', { text: tpl });
+        chip.createEl('button', { text: '×', cls: 'conlang-icon-btn' }).addEventListener('click', async () => {
+          phon.syllableTemplates.splice(ti, 1); await save(); drawTemplates();
+        });
+      });
+    };
+    drawTemplates();
+    const tplRow = secD.createDiv();
+    const tplInp = tplRow.createEl('input', { type: 'text', placeholder: 'e.g. CV or CVC', cls: 'conlang-sc-inp' });
+    tplInp.style.width = '120px';
+    tplRow.createEl('button', { text: '+ Add' }).addEventListener('click', async () => {
+      const v = tplInp.value.trim();
+      if (v) { phon.syllableTemplates.push(v); tplInp.value = ''; await save(); drawTemplates(); }
+    });
+    secD.createEl('h4', { text: 'Onset clusters' });
+    const onsetInp = secD.createEl('input', { type: 'text', cls: 'conlang-phon-input', placeholder: 'pl bl tr dr kr' });
+    onsetInp.value = phon.onsetClusters.join(' ');
+    onsetInp.addEventListener('input', async () => { phon.onsetClusters = onsetInp.value.split(/\s+/).filter(Boolean); await save(); });
+    secD.createEl('h4', { text: 'Coda clusters' });
+    const codaInp = secD.createEl('input', { type: 'text', cls: 'conlang-phon-input', placeholder: 'nt nd mp rk' });
+    codaInp.value = phon.codaClusters.join(' ');
+    codaInp.addEventListener('input', async () => { phon.codaClusters = codaInp.value.split(/\s+/).filter(Boolean); await save(); });
+
+    // ── Section E: Orthography ──
+    const secE = el.createDiv('conlang-phon-section');
+    secE.createEl('h3', { text: 'Spelling Rules (IPA → Latin)' });
+    secE.createEl('p', { text: 'Rules are applied longest-first. Phonemes without rules keep their IPA form.', cls: 'conlang-phon-count' });
+    const orthoTable = secE.createEl('table', { cls: 'conlang-ortho-table' });
+    const orthoHdr = orthoTable.createEl('thead').createEl('tr');
+    ['IPA', 'Spelling', ''].forEach(h => orthoHdr.createEl('th', { text: h }));
+    const orthoBody = orthoTable.createEl('tbody');
+    const drawOrtho = () => {
+      orthoBody.empty();
+      ortho.forEach((rule, ri) => {
+        const tr = orthoBody.createEl('tr');
+        const ipaInp = tr.createEl('td').createEl('input', { type: 'text', value: rule.ipa, cls: 'conlang-sc-inp' });
+        ipaInp.addEventListener('change', async () => { ortho[ri].ipa = ipaInp.value; await save(); });
+        const spInp = tr.createEl('td').createEl('input', { type: 'text', value: rule.spelling, cls: 'conlang-sc-inp' });
+        spInp.addEventListener('change', async () => { ortho[ri].spelling = spInp.value; await save(); });
+        tr.createEl('td').createEl('button', { text: '×', cls: 'conlang-icon-btn conlang-del-btn' }).addEventListener('click', async () => {
+          ortho.splice(ri, 1); await save(); drawOrtho();
+        });
+      });
+    };
+    drawOrtho();
+    const orthoActRow = secE.createDiv();
+    orthoActRow.createEl('button', { text: '+ Add rule' }).addEventListener('click', async () => {
+      ortho.push({ ipa: '', spelling: '' }); await save(); drawOrtho();
+    });
+    orthoActRow.createEl('button', { text: 'Auto-fill from phonemes', cls: 'conlang-phon-preset-btn' }).addEventListener('click', async () => {
+      const allPhonemes = [...phon.consonants, ...phon.vowels];
+      const existing = new Set(ortho.map(r => r.ipa));
+      allPhonemes.forEach(p => {
+        if (!existing.has(p) && DEFAULT_SPELLING[p]) {
+          ortho.push({ ipa: p, spelling: DEFAULT_SPELLING[p] });
+          existing.add(p);
+        }
+      });
+      await save(); drawOrtho();
+    });
+
+    // ── Section F: Phonotactic Notes ──
+    const secF = el.createDiv('conlang-phon-section');
+    secF.createEl('h3', { text: 'Phonotactic Notes' });
+    const notesInp = secF.createEl('textarea', { cls: 'conlang-phon-input', placeholder: 'e.g. No /ŋ/ in word-initial position' });
+    notesInp.rows = 4;
+    notesInp.value = phon.phonotacticNotes || '';
+    notesInp.addEventListener('input', async () => { phon.phonotacticNotes = notesInp.value; await save(); });
   }
 
   // ── Conjugation / Declension actions ──
@@ -2212,6 +2560,36 @@ class ConlangDictionaryPlugin extends obsidian.Plugin {
   color:var(--text-normal); }
 .ce-clickable-row { cursor:pointer; }
 .ce-clickable-row:hover td { background:var(--background-modifier-hover); }
+
+/* ── Phonology tab ── */
+.conlang-phon-section { margin-bottom:20px; }
+.conlang-phon-section h3 { margin:0 0 8px; font-size:14px; font-weight:600; }
+.conlang-phon-section h4 { margin:8px 0 4px; font-size:12px; font-weight:600; color:var(--text-muted); }
+.conlang-phon-input { width:100%; font-family:'Noto Sans',sans-serif; font-size:15px; padding:6px 8px;
+  border:1px solid var(--background-modifier-border); border-radius:4px;
+  background:var(--background-primary); color:var(--text-normal); }
+.conlang-phon-count { font-size:12px; color:var(--text-muted); margin-top:4px; }
+.conlang-phon-templates { display:flex; flex-wrap:wrap; gap:6px; margin:8px 0; }
+.conlang-phon-tpl { display:flex; align-items:center; gap:4px; background:var(--background-modifier-form-field);
+  border-radius:4px; padding:2px 6px; font-family:monospace; border:1px solid var(--background-modifier-border); }
+.conlang-phon-tpl button { background:none; border:none; cursor:pointer; color:var(--text-muted); }
+.conlang-phon-preset-btn { margin:0 6px 4px 0; padding:3px 10px; font-size:12px; border-radius:4px; cursor:pointer;
+  background:var(--background-secondary); border:1px solid var(--background-modifier-border); color:var(--text-normal); }
+.conlang-phon-preset-btn:hover { background:var(--interactive-hover); }
+.conlang-phon-vgroup { display:flex; align-items:center; gap:6px; margin-bottom:4px; }
+
+/* ── IPA Picker modal ── */
+.conlang-ipa-cell { display:inline-block; text-align:center; padding:3px 5px; cursor:pointer;
+  border-radius:3px; min-width:24px; font-size:14px; }
+.conlang-ipa-cell:hover { background:var(--background-modifier-hover); }
+.conlang-ipa-cell.is-selected { background:var(--interactive-accent); color:var(--text-on-accent); }
+.conlang-ipa-hdr { font-weight:600; font-size:11px; color:var(--text-muted); text-align:center; padding:3px; }
+
+/* ── Orthography table ── */
+.conlang-ortho-table { width:100%; border-collapse:collapse; margin-bottom:8px; }
+.conlang-ortho-table th { text-align:left; font-size:12px; color:var(--text-muted); padding:4px; }
+.conlang-ortho-table td { padding:2px 4px; }
+.conlang-ortho-table input { width:80px; }
 `;
 
 
