@@ -1835,6 +1835,16 @@ class WordModal extends obsidian.Modal {
     const saveBtn = btnRow.createEl('button', { text:'Save', cls:'mod-cta' });
     saveBtn.addEventListener('click', () => {
       if (!this.word.spelling.trim()) { new obsidian.Notice('Spelling is required'); return; }
+      // Vérifier cohérence morphClassId / POS
+      if (this.word.morphClassId) {
+        const mc = (this.dict.morphClasses || []).find(c => c.id === this.word.morphClassId);
+        if (mc) {
+          const isVerb = /^v(erb)?$/i.test(this.word.pos || '');
+          if ((mc.type === 'conjugation' && !isVerb) || (mc.type === 'declension' && isVerb)) {
+            this.word.morphClassId = null;
+          }
+        }
+      }
       // Clean up empty custom fields
       Object.keys(this.word.customFields).forEach(k => {
         if (!k.trim()) delete this.word.customFields[k];
@@ -2153,7 +2163,7 @@ async function applyToNewDict(plugin, sourceDict, rs, childName) {
   child.words.forEach(cw => {
     const sw = sourceDict.words.find(w => w.id === cw.ancestorWordId);
     if (!sw) return;
-    const applyToForm = f => { let v=f; (rs.rules||[]).forEach(r=>{v=applyRuleToIPA(v,r,phon);}); return applyOrthography(v,ortho); };
+    const applyToForm = f => { let ipa=reverseOrthography(f,ortho); (rs.rules||[]).forEach(r=>{ipa=applyRuleToIPA(ipa,r,phon);}); return applyOrthography(ipa,ortho); };
     const conjForms = {};
     Object.entries(sw.conjugationForms || {}).forEach(([pid,forms]) => {
       conjForms[pid] = {};
@@ -2182,12 +2192,33 @@ async function applyToExistingDict(plugin, sourceDict, rs, targetDictName) {
     let evolvedIPA = origIPA;
     (rs.rules||[]).forEach(r => { evolvedIPA = applyRuleToIPA(evolvedIPA, r, phon); });
     const newSpelling = applyOrthography(evolvedIPA, ortho);
+
+    const applyToForm = f => { let ipa=reverseOrthography(f,ortho); (rs.rules||[]).forEach(r=>{ipa=applyRuleToIPA(ipa,r,phon);}); return applyOrthography(ipa,ortho); };
+
+    const conjForms = {};
+    Object.entries(srcWord.conjugationForms || {}).forEach(([pid, forms]) => {
+      conjForms[pid] = {};
+      Object.entries(forms).forEach(([key, val]) => { if (val) conjForms[pid][key] = applyToForm(val); });
+    });
+    const declForms = {};
+    Object.entries(srcWord.declensionForms || {}).forEach(([key, val]) => { if (val) declForms[key] = applyToForm(val); });
+
     const existing = target.words.find(w => w.ancestorWordId === srcWord.id);
-    if (existing) { existing.pronunciation = evolvedIPA; existing.spelling = newSpelling; updated++; }
-    else {
+    if (existing) {
+      existing.pronunciation = evolvedIPA;
+      existing.spelling = newSpelling;
+      existing.conjugationForms = conjForms;
+      existing.declensionForms = declForms;
+      existing.morphClassId = srcWord.morphClassId || null;
+      existing.morphAutoForms = JSON.parse(JSON.stringify(srcWord.morphAutoForms || {}));
+      updated++;
+    } else {
       target.words.push({ ...srcWord, id: genId(), pronunciation: evolvedIPA,
         spelling: newSpelling, ancestorWordId: srcWord.id,
-        conjugationForms: {}, declensionForms: {}, createdAt: new Date().toISOString() });
+        conjugationForms: conjForms, declensionForms: declForms,
+        morphClassId: srcWord.morphClassId || null,
+        morphAutoForms: JSON.parse(JSON.stringify(srcWord.morphAutoForms || {})),
+        createdAt: new Date().toISOString() });
       added++;
     }
   });
