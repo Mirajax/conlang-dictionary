@@ -329,6 +329,148 @@ function applyRuleToIPA(ipa, rule, phon) {
   }
 }
 
+// ─── Phase 4: Morphological Classes ──────────────────────────────────────────
+
+const MORPH_CLASS_PRESETS = {
+  'Latin 1st Decl. (-a)': {
+    type: 'declension', applicableGenders: ['f'], stemRule: 'root',
+    rules: {
+      'nom-sg':{type:'suffix',affix:'a'},   'acc-sg':{type:'suffix',affix:'am'},
+      'gen-sg':{type:'suffix',affix:'ae'},  'dat-sg':{type:'suffix',affix:'ae'},
+      'abl-sg':{type:'suffix',affix:'ā'},   'voc-sg':{type:'suffix',affix:'a'},
+      'nom-pl':{type:'suffix',affix:'ae'},  'acc-pl':{type:'suffix',affix:'ās'},
+      'gen-pl':{type:'suffix',affix:'ārum'},'dat-pl':{type:'suffix',affix:'īs'},
+      'abl-pl':{type:'suffix',affix:'īs'},  'voc-pl':{type:'suffix',affix:'ae'},
+    }, morphophonRules: []
+  },
+  'Latin 2nd Decl. (-us)': {
+    type: 'declension', applicableGenders: ['m'], stemRule: 'root',
+    rules: {
+      'nom-sg':{type:'suffix',affix:'us'},  'acc-sg':{type:'suffix',affix:'um'},
+      'gen-sg':{type:'suffix',affix:'ī'},   'dat-sg':{type:'suffix',affix:'ō'},
+      'abl-sg':{type:'suffix',affix:'ō'},   'voc-sg':{type:'suffix',affix:'e'},
+      'nom-pl':{type:'suffix',affix:'ī'},   'acc-pl':{type:'suffix',affix:'ōs'},
+      'gen-pl':{type:'suffix',affix:'ōrum'},'dat-pl':{type:'suffix',affix:'īs'},
+      'abl-pl':{type:'suffix',affix:'īs'},  'voc-pl':{type:'suffix',affix:'ī'},
+    }, morphophonRules: []
+  },
+  'Turkish Agglutinative': {
+    type: 'declension', applicableGenders: [], stemRule: 'spelling',
+    rules: {
+      'nom-sg':{type:'stem'},               'acc-sg':{type:'suffix',affix:'ı'},
+      'gen-sg':{type:'suffix',affix:'ın'},  'dat-sg':{type:'suffix',affix:'a'},
+      'abl-sg':{type:'suffix',affix:'dan'}, 'loc-sg':{type:'suffix',affix:'da'},
+      'nom-pl':{type:'suffix',affix:'lar'}, 'acc-pl':{type:'suffix',affix:'ları'},
+      'gen-pl':{type:'suffix',affix:'ların'},'dat-pl':{type:'suffix',affix:'lara'},
+      'abl-pl':{type:'suffix',affix:'lardan'},'loc-pl':{type:'suffix',affix:'larda'},
+    }, morphophonRules: []
+  },
+  'Regular -er verb (Romance)': {
+    type: 'conjugation', stemRule: 'root',
+    rules: {
+      'prs.1sg':{type:'suffix',affix:'o'},   'prs.2sg':{type:'suffix',affix:'es'},
+      'prs.3sg':{type:'suffix',affix:'e'},   'prs.1pl':{type:'suffix',affix:'emos'},
+      'prs.2pl':{type:'suffix',affix:'éis'}, 'prs.3pl':{type:'suffix',affix:'en'},
+      'pst.1sg':{type:'suffix',affix:'í'},   'pst.2sg':{type:'suffix',affix:'iste'},
+      'pst.3sg':{type:'suffix',affix:'ió'},  'pst.1pl':{type:'suffix',affix:'imos'},
+      'pst.2pl':{type:'suffix',affix:'isteis'},'pst.3pl':{type:'suffix',affix:'ieron'},
+    }, morphophonRules: []
+  },
+  'Japanese verb (godan)': {
+    type: 'conjugation', stemRule: 'strip:1',
+    rules: {
+      'inf':{type:'suffix',affix:'u'},        'prs.ptcp':{type:'suffix',affix:'ite'},
+      'pst.ptcp':{type:'suffix',affix:'ita'}, 'imp':{type:'suffix',affix:'e'},
+      'prs.1sg':{type:'suffix',affix:'imasu'},'prs.3sg':{type:'suffix',affix:'imasu'},
+    }, morphophonRules: []
+  },
+};
+
+function getDeclensionSlots(dict) {
+  const cases = dict.cases || [];
+  const numbers = dict.numbers || ['sg','pl'];
+  return cases.flatMap(c => numbers.map(n => ({ key:`${c.toLowerCase()}-${n}`, label:`${c}.${n}` })));
+}
+
+function extractStem(word, stemRule) {
+  if (!stemRule || stemRule === 'root')
+    return (word.root || word.spelling || '').replace(/-$/, '');
+  if (stemRule === 'spelling') return word.spelling || '';
+  if (stemRule === 'pronunciation') return word.pronunciation || '';
+  if (stemRule.startsWith('strip:')) {
+    const n = parseInt(stemRule.slice(6));
+    const sp = word.spelling || '';
+    return sp.slice(0, Math.max(0, sp.length - n));
+  }
+  if (stemRule.startsWith('strip-prefix:')) {
+    const n = parseInt(stemRule.slice(13));
+    return (word.spelling || '').slice(n);
+  }
+  if (stemRule.startsWith('regex:')) {
+    try {
+      const match = (word.spelling || '').match(new RegExp(stemRule.slice(6)));
+      return match ? (match[1] || match[0]) : word.spelling || '';
+    } catch { return word.spelling || ''; }
+  }
+  return word.spelling || '';
+}
+
+function applyMorphRule(word, rule, morphophonRules, phonology) {
+  let stem = extractStem(word, rule.stemRule || 'root');
+  if (stem === undefined || stem === null) stem = '';
+  let form = '';
+  switch (rule.type) {
+    case 'suffix': form = stem + (rule.affix || ''); break;
+    case 'prefix': form = (rule.affix || '') + stem; break;
+    case 'infix': {
+      const m = stem.match(/^([^aeiouɛɔæɑəɪʊ]*[aeiouɛɔæɑəɪʊ]?)/i);
+      const pos = m ? m[0].length : 1;
+      form = stem.slice(0, pos) + (rule.affix || '') + stem.slice(pos);
+      break;
+    }
+    case 'circumfix': {
+      const parts = (rule.affix || '-').split('-');
+      form = (parts[0] || '') + stem + (parts[1] || '');
+      break;
+    }
+    case 'replacement': {
+      const [pat, repl] = (rule.affix || '→').split('→');
+      form = stem.replace(new RegExp(pat, 'g'), repl || '');
+      break;
+    }
+    case 'full':  form = rule.affix || ''; break;
+    case 'stem':
+    default:      form = stem; break;
+  }
+  if (morphophonRules && morphophonRules.length) {
+    const phon = phonology || {};
+    morphophonRules.forEach(r => { form = applyRuleToIPA(form, r, phon); });
+  }
+  return form;
+}
+
+function generateForms(word, morphClass, dict) {
+  const phon = dict.phonology || {};
+  const result = { conjugationForms: {}, declensionForms: {} };
+  if (morphClass.type === 'conjugation') {
+    const paradigm = (dict.paradigms || []).find(p => p.id === morphClass.paradigmId);
+    if (!paradigm) return result;
+    const forms = {};
+    (paradigm.slots || []).forEach(slot => {
+      const rule = (morphClass.rules || {})[slot.key];
+      if (rule) forms[slot.key] = applyMorphRule(word, rule, morphClass.morphophonRules, phon);
+    });
+    result.conjugationForms[morphClass.paradigmId] = forms;
+  }
+  if (morphClass.type === 'declension') {
+    getDeclensionSlots(dict).forEach(slot => {
+      const rule = (morphClass.rules || {})[slot.key];
+      if (rule) result.declensionForms[slot.key] = applyMorphRule(word, rule, morphClass.morphophonRules, phon);
+    });
+  }
+  return result;
+}
+
 // ─── Word Generator Engine ────────────────────────────────────────────────────
 const NASALS     = new Set(['m','ɱ','n','ɳ','ɲ','ŋ','ɴ']);
 const FRICATIVES = new Set(['ɸ','β','f','v','θ','ð','s','z','ʃ','ʒ','ʂ','ʐ','ç','ʝ','x','ɣ','χ','ʁ','ħ','ʕ','h','ɦ','ɬ','ɮ']);
@@ -943,9 +1085,10 @@ class ParadigmManagerModal extends obsidian.Modal {
 }
 
 class ConjugationFormModal extends obsidian.Modal {
-  constructor(app, word, paradigms, onSave) {
+  constructor(app, word, paradigms, onSave, dict) {
     super(app); this.word=word; this.paradigms=paradigms.filter(p=>p.type==='conjugation');
     this.forms=JSON.parse(JSON.stringify(word.conjugationForms||{})); this.onSave=onSave;
+    this.dict=dict||null;
   }
   onOpen(){
     const {contentEl,modalEl}=this; modalEl.style.maxWidth='560px';
@@ -961,12 +1104,25 @@ class ConjugationFormModal extends obsidian.Modal {
       (p.slots||[]).forEach(slot=>{
         const row=grid.createDiv('conlang-conj-row');
         row.createEl('label',{text:slot.label||slot.key,cls:'conlang-conj-lbl'});
-        const inp=row.createEl('input',{type:'text',value:this.forms[p.id][slot.key]||'',placeholder:this.word.spelling||'',cls:'conlang-conj-input'});
-        inp.addEventListener('input',()=>this.forms[p.id][slot.key]=inp.value);
+        const isAuto=this.word.morphAutoForms&&this.word.morphAutoForms[slot.key];
+        const inp=row.createEl('input',{type:'text',value:this.forms[p.id][slot.key]||'',placeholder:this.word.spelling||'',cls:'conlang-conj-input'+(isAuto?' conlang-auto-input':'')});
+        inp.addEventListener('input',()=>{this.forms[p.id][slot.key]=inp.value;inp.classList.remove('conlang-auto-input');});
+        if(isAuto) row.createEl('span',{text:'auto',cls:'conlang-auto-badge'});
       });
     };
     draw(); sel.addEventListener('change',draw);
     const btnRow=contentEl.createDiv('conlang-modal-buttons');
+    if(this.dict && this.word.morphClassId){
+      const mc=(this.dict.morphClasses||[]).find(c=>c.id===this.word.morphClassId);
+      if(mc) btnRow.createEl('button',{text:'⚡ Auto-fill',cls:'conlang-phon-preset-btn'}).addEventListener('click',()=>{
+        const generated=generateForms(this.word,mc,this.dict);
+        Object.entries(generated.conjugationForms).forEach(([pid,forms])=>{
+          if(!this.forms[pid]) this.forms[pid]={};
+          Object.entries(forms).forEach(([key,val])=>{ if(!this.forms[pid][key]) this.forms[pid][key]=val; });
+        });
+        draw();
+      });
+    }
     btnRow.createEl('button',{text:'Copy as Markdown',cls:'conlang-copy-md-btn'}).addEventListener('click',()=>{
       const p=this.paradigms.find(x=>x.id===sel.value);
       if(!p){new obsidian.Notice('Select a paradigm first');return;}
@@ -981,32 +1137,308 @@ class ConjugationFormModal extends obsidian.Modal {
 
 class DeclensionFormModal extends obsidian.Modal {
   constructor(app, word, dict, onSave) {
-    super(app); this.word=word; this.cases=dict.cases||[]; this.numbers=dict.numbers||['sg','pl'];
+    super(app); this.word=word; this.dict=dict; this.cases=dict.cases||[]; this.numbers=dict.numbers||['sg','pl'];
     this.forms={...(word.declensionForms||{})}; this.onSave=onSave;
   }
   onOpen(){
     const {contentEl,modalEl}=this; modalEl.style.maxWidth='560px';
     contentEl.empty(); contentEl.createEl('h2',{text:`Declension: ${this.word.spelling||'(new)'}`});
     if(!this.cases.length){contentEl.createEl('p',{text:'No cases defined. Use ⚙ → Dictionary Settings.',cls:'conlang-muted'});contentEl.createDiv('conlang-modal-buttons').createEl('button',{text:'Close',cls:'mod-cta'}).addEventListener('click',()=>this.close());return;}
-    const table=contentEl.createEl('table',{cls:'conlang-decl-table'});
-    const hr=table.createEl('thead').createEl('tr'); hr.createEl('th');
-    this.numbers.forEach(n=>hr.createEl('th',{text:n.toUpperCase()}));
-    const tbody=table.createEl('tbody');
-    this.cases.forEach(c=>{
-      const tr=tbody.createEl('tr'); tr.createEl('td',{text:c,cls:'conlang-decl-lbl'});
-      this.numbers.forEach(n=>{
-        const key=`${c.toLowerCase()}-${n}`;
-        const inp=tr.createEl('td').createEl('input',{type:'text',value:this.forms[key]||'',placeholder:`${c}.${n}`,cls:'conlang-decl-inp'});
-        inp.addEventListener('input',()=>this.forms[key]=inp.value);
+    const drawTable=()=>{
+      tblWrap.empty();
+      const table=tblWrap.createEl('table',{cls:'conlang-decl-table'});
+      const hr=table.createEl('thead').createEl('tr'); hr.createEl('th');
+      this.numbers.forEach(n=>hr.createEl('th',{text:n.toUpperCase()}));
+      const tbody=table.createEl('tbody');
+      this.cases.forEach(c=>{
+        const tr=tbody.createEl('tr'); tr.createEl('td',{text:c,cls:'conlang-decl-lbl'});
+        this.numbers.forEach(n=>{
+          const key=`${c.toLowerCase()}-${n}`;
+          const isAuto=this.word.morphAutoForms&&this.word.morphAutoForms[key];
+          const td=tr.createEl('td');
+          const inp=td.createEl('input',{type:'text',value:this.forms[key]||'',placeholder:`${c}.${n}`,cls:'conlang-decl-inp'+(isAuto?' conlang-auto-input':'')});
+          inp.addEventListener('input',()=>{this.forms[key]=inp.value;inp.classList.remove('conlang-auto-input');});
+          if(isAuto) td.createEl('span',{text:'auto',cls:'conlang-auto-badge'});
+        });
       });
-    });
+    };
+    const tblWrap=contentEl.createDiv(); drawTable();
     const btnRow=contentEl.createDiv('conlang-modal-buttons');
+    if(this.word.morphClassId){
+      const mc=(this.dict.morphClasses||[]).find(c=>c.id===this.word.morphClassId);
+      if(mc) btnRow.createEl('button',{text:'⚡ Auto-fill',cls:'conlang-phon-preset-btn'}).addEventListener('click',()=>{
+        const generated=generateForms(this.word,mc,this.dict);
+        Object.entries(generated.declensionForms).forEach(([key,val])=>{ if(!this.forms[key]) this.forms[key]=val; });
+        drawTable();
+      });
+    }
     btnRow.createEl('button',{text:'Copy as Markdown',cls:'conlang-copy-md-btn'}).addEventListener('click',()=>{
       navigator.clipboard.writeText(declToMarkdown({...this.word,declensionForms:this.forms},{cases:this.cases,numbers:this.numbers}));
       new obsidian.Notice('Copied declension as Markdown!');
     });
     btnRow.createEl('button',{text:'Save',cls:'mod-cta'}).addEventListener('click',()=>{this.onSave(this.forms);this.close();});
     btnRow.createEl('button',{text:'Cancel'}).addEventListener('click',()=>this.close());
+  }
+  onClose(){this.contentEl.empty();}
+}
+
+// ─── Morph Class Editor Modal ─────────────────────────────────────────────────
+class MorphClassEditorModal extends obsidian.Modal {
+  constructor(app, dict, morphClass, onSave) {
+    super(app);
+    this.dict = dict;
+    this.mc = JSON.parse(JSON.stringify(morphClass));
+    this.onSave = onSave;
+  }
+  onOpen() {
+    const {contentEl,modalEl}=this; modalEl.style.maxWidth='680px';
+    contentEl.empty(); contentEl.createEl('h2',{text: this.mc.id ? 'Edit Morph Class' : 'New Morph Class'});
+    const draw = () => this._draw(contentEl);
+    draw();
+  }
+  _draw(contentEl) {
+    // Keep header, clear below it
+    const h2 = contentEl.querySelector('h2');
+    contentEl.empty(); if(h2) contentEl.appendChild(h2);
+    const mc = this.mc;
+
+    // ── Header fields ──
+    new obsidian.Setting(contentEl).setName('Name').addText(t=>{
+      t.setValue(mc.name||'').onChange(v=>mc.name=v);
+    });
+    new obsidian.Setting(contentEl).setName('Type').addDropdown(d=>{
+      d.addOption('declension','Declension').addOption('conjugation','Conjugation');
+      d.setValue(mc.type||'declension').onChange(v=>{mc.type=v; this._draw(contentEl);});
+    });
+
+    // Paradigm (conjugation only)
+    const paradigms = (this.dict.paradigms||[]).filter(p=>p.type===mc.type);
+    if(mc.type==='conjugation') {
+      new obsidian.Setting(contentEl).setName('Paradigm').addDropdown(d=>{
+        d.addOption('','— Select —');
+        paradigms.forEach(p=>d.addOption(p.id,p.name));
+        d.setValue(mc.paradigmId||'').onChange(v=>{mc.paradigmId=v; this._draw(contentEl);});
+      });
+    }
+
+    // Applicable genders (declension only)
+    if(mc.type==='declension' && this.dict.useGenders && (this.dict.genders||[]).length) {
+      const gSet = new Set(mc.applicableGenders||[]);
+      const gs = new obsidian.Setting(contentEl).setName('Applicable Genders').setDesc('Leave all unchecked = applies to all genders');
+      this.dict.genders.forEach(g=>{
+        gs.addToggle(t=>{
+          t.setTooltip(g); t.setValue(gSet.has(g));
+          t.onChange(on=>{ if(on) gSet.add(g); else gSet.delete(g); mc.applicableGenders=[...gSet]; });
+        });
+        gs.settingEl.querySelector('.setting-item-control').lastElementChild.insertAdjacentText('beforebegin', g+' ');
+      });
+    }
+
+    // Stem rule
+    mc.stemRule = mc.stemRule || 'root';
+    const stemSetting = new obsidian.Setting(contentEl).setName('Stem Rule').addDropdown(d=>{
+      ['root','spelling','pronunciation','strip:N','strip-prefix:N','regex:'].forEach(opt=>d.addOption(opt,opt));
+      const cur = mc.stemRule.startsWith('strip-prefix:') ? 'strip-prefix:N'
+                : mc.stemRule.startsWith('strip:') ? 'strip:N'
+                : mc.stemRule.startsWith('regex:') ? 'regex:'
+                : mc.stemRule;
+      d.setValue(cur).onChange(v=>{
+        if(v==='strip:N') mc.stemRule='strip:1';
+        else if(v==='strip-prefix:N') mc.stemRule='strip-prefix:1';
+        else if(v==='regex:') mc.stemRule='regex:';
+        else mc.stemRule=v;
+        this._draw(contentEl);
+      });
+    });
+    if(mc.stemRule.startsWith('strip:') || mc.stemRule.startsWith('strip-prefix:')) {
+      const n = parseInt(mc.stemRule.split(':')[1])||1;
+      stemSetting.addText(t=>{ t.inputEl.type='number'; t.inputEl.style.width='60px'; t.setValue(String(n));
+        t.onChange(v=>{
+          const pfx = mc.stemRule.startsWith('strip-prefix:') ? 'strip-prefix:' : 'strip:';
+          mc.stemRule = pfx+(parseInt(v)||1);
+        });
+      });
+    }
+    if(mc.stemRule.startsWith('regex:')) {
+      stemSetting.addText(t=>{ t.setPlaceholder('^(.+?)is$').setValue(mc.stemRule.slice(6));
+        t.onChange(v=>mc.stemRule='regex:'+v);
+      });
+    }
+
+    // Preview word selector
+    const words = this.dict.words || [];
+    let previewWord = words[0] || null;
+    const previewRow = contentEl.createDiv('conlang-mc-preview-row');
+    if(words.length) {
+      const lbl = previewRow.createEl('label',{text:'Preview with: ',cls:'conlang-mc-preview-lbl'});
+      const sel = previewRow.createEl('select');
+      words.forEach(w=>sel.createEl('option',{text:`${w.spelling}${w.root?' ('+w.root+')':''}`,value:w.id}));
+      previewWord = words.find(w=>w.id===sel.value)||words[0];
+      sel.addEventListener('change',()=>{ previewWord=words.find(w=>w.id===sel.value)||null; refreshPreviews(); });
+    }
+
+    // Rules table
+    const slots = mc.type==='declension'
+      ? getDeclensionSlots(this.dict)
+      : (mc.paradigmId ? ((this.dict.paradigms||[]).find(p=>p.id===mc.paradigmId)||{}).slots||[] : []);
+
+    if(!slots.length) {
+      contentEl.createEl('p',{text: mc.type==='conjugation' ? 'Select a paradigm to define rules.' : 'No cases defined in Dictionary Settings.',cls:'conlang-muted'});
+    } else {
+      mc.rules = mc.rules || {};
+      const tbl = contentEl.createEl('table',{cls:'conlang-mc-rules-table'});
+      const hr = tbl.createEl('thead').createEl('tr');
+      ['Slot','Type','Affix','Preview'].forEach(t=>hr.createEl('th',{text:t}));
+      const tbody = tbl.createEl('tbody');
+      const previewCells = [];
+      slots.forEach(slot=>{
+        if(!mc.rules[slot.key]) mc.rules[slot.key]={type:'suffix',affix:''};
+        const rule = mc.rules[slot.key];
+        const tr = tbody.createEl('tr');
+        tr.createEl('td',{text:slot.label||slot.key});
+        const typeTd = tr.createEl('td');
+        const typeSel = typeTd.createEl('select');
+        ['suffix','prefix','infix','circumfix','replacement','full','stem'].forEach(opt=>typeSel.createEl('option',{text:opt,value:opt}));
+        typeSel.value=rule.type||'suffix';
+        typeSel.addEventListener('change',()=>{rule.type=typeSel.value; refreshPreviews();});
+        const affixTd = tr.createEl('td');
+        const affixInp = affixTd.createEl('input',{type:'text',value:rule.affix||'',placeholder:'-'});
+        affixInp.addEventListener('input',()=>{rule.affix=affixInp.value; refreshPreviews();});
+        const prevTd = tr.createEl('td',{cls:'conlang-mc-preview'});
+        previewCells.push({prevTd, slot});
+      });
+      const refreshPreviews = () => {
+        if(!previewWord) return;
+        previewCells.forEach(({prevTd,slot})=>{
+          const rule = mc.rules[slot.key];
+          if(!rule) return;
+          prevTd.textContent = applyMorphRule(previewWord, rule, mc.morphophonRules||[], this.dict.phonology||{});
+        });
+      };
+      refreshPreviews();
+    }
+
+    // Morphophonological rules
+    mc.morphophonRules = mc.morphophonRules || [];
+    contentEl.createEl('h3',{text:'Morphophonological Rules',cls:'conlang-mc-mphr-hdr'});
+    contentEl.createEl('p',{text:'Applied after affixation (e.g. nasal assimilation). Same syntax as Sound Changes.',cls:'conlang-hint'});
+    const mphrList = contentEl.createDiv();
+    const redrawMphr = () => {
+      mphrList.empty();
+      mc.morphophonRules.forEach((r,i)=>{
+        const row = mphrList.createDiv('conlang-sc-rule-row');
+        const fi=row.createEl('input',{type:'text',value:r.from||'',placeholder:'from',cls:'conlang-sc-inp'}); fi.style.width='70px';
+        row.createEl('span',{text:'→',cls:'conlang-sc-arrow'});
+        const ti=row.createEl('input',{type:'text',value:r.to||'',placeholder:'to',cls:'conlang-sc-inp'}); ti.style.width='70px';
+        row.createEl('span',{text:'/',cls:'conlang-sc-sep'});
+        const ei=row.createEl('input',{type:'text',value:r.env||'',placeholder:'env (opt)',cls:'conlang-sc-inp'}); ei.style.width='90px';
+        fi.addEventListener('input',()=>r.from=fi.value);
+        ti.addEventListener('input',()=>r.to=ti.value);
+        ei.addEventListener('input',()=>r.env=ei.value);
+        const delBtn=row.createEl('button',{text:'✕',cls:'conlang-icon-btn conlang-del-btn'});
+        delBtn.addEventListener('click',()=>{mc.morphophonRules.splice(i,1);redrawMphr();});
+      });
+    };
+    redrawMphr();
+    contentEl.createEl('button',{text:'+ Add Rule',cls:'conlang-phon-preset-btn'})
+      .addEventListener('click',()=>{mc.morphophonRules.push({from:'',to:'',env:''});redrawMphr();});
+
+    // Buttons
+    const btnRow = contentEl.createDiv('conlang-modal-buttons');
+    btnRow.createEl('button',{text:'Save',cls:'mod-cta'}).addEventListener('click',()=>{
+      if(!mc.name||!mc.name.trim()){new obsidian.Notice('Name is required');return;}
+      this.onSave(mc); this.close();
+    });
+    btnRow.createEl('button',{text:'Cancel'}).addEventListener('click',()=>this.close());
+  }
+  onClose(){this.contentEl.empty();}
+}
+
+// ─── Batch Morph Assign Modal ─────────────────────────────────────────────────
+class BatchMorphAssignModal extends obsidian.Modal {
+  constructor(app, dict, onSave) {
+    super(app); this.dict=dict; this.onSave=onSave;
+    this.targetClassId=''; this.posFilter=''; this.genderFilter=''; this.onlyUnclassed=true;
+    this.selected=new Set();
+  }
+  onOpen(){
+    const {contentEl,modalEl}=this; modalEl.style.maxWidth='560px';
+    contentEl.empty(); contentEl.createEl('h2',{text:'Batch Assign Morphological Class'});
+    const classes=this.dict.morphClasses||[];
+    if(!classes.length){contentEl.createEl('p',{text:'No morph classes defined yet.',cls:'conlang-muted'});contentEl.createDiv('conlang-modal-buttons').createEl('button',{text:'Close',cls:'mod-cta'}).addEventListener('click',()=>this.close());return;}
+
+    new obsidian.Setting(contentEl).setName('Assign to class').addDropdown(d=>{
+      d.addOption('','— Select —');
+      classes.forEach(mc=>d.addOption(mc.id,`[${mc.type}] ${mc.name}`));
+      d.onChange(v=>{this.targetClassId=v; redraw();});
+    });
+    const poses=[...new Set((this.dict.words||[]).map(w=>w.pos).filter(Boolean))].sort();
+    if(poses.length) new obsidian.Setting(contentEl).setName('Filter by POS').addDropdown(d=>{
+      d.addOption('','All'); poses.forEach(p=>d.addOption(p,p));
+      d.onChange(v=>{this.posFilter=v; redraw();});
+    });
+    if(this.dict.useGenders && (this.dict.genders||[]).length)
+      new obsidian.Setting(contentEl).setName('Filter by Gender').addDropdown(d=>{
+        d.addOption('','All'); (this.dict.genders||[]).forEach(g=>d.addOption(g,g));
+        d.onChange(v=>{this.genderFilter=v; redraw();});
+      });
+    new obsidian.Setting(contentEl).setName('Only words without a class').addToggle(t=>{
+      t.setValue(true).onChange(v=>{this.onlyUnclassed=v; redraw();});
+    });
+
+    const listEl=contentEl.createDiv('conlang-batch-list');
+    const countEl=contentEl.createEl('p',{cls:'conlang-muted'});
+    const redraw=()=>{
+      listEl.empty(); this.selected.clear();
+      const mc=classes.find(c=>c.id===this.targetClassId);
+      let filtered=(this.dict.words||[]).filter(w=>{
+        if(this.onlyUnclassed && w.morphClassId) return false;
+        if(this.posFilter && w.pos!==this.posFilter) return false;
+        if(this.genderFilter && w.gender!==this.genderFilter) return false;
+        if(mc){
+          if(mc.type==='conjugation'&&!/^v(erb)?$/i.test(w.pos||'')) return false;
+          if(mc.type==='declension'&&/^v(erb)?$/i.test(w.pos||'')) return false;
+        }
+        return true;
+      });
+      countEl.textContent=`${filtered.length} word(s) match`;
+      filtered.forEach(w=>{
+        this.selected.add(w.id);
+        const row=listEl.createDiv('conlang-batch-row');
+        const chk=row.createEl('input',{type:'checkbox'}); chk.checked=true;
+        chk.addEventListener('change',()=>{ if(chk.checked) this.selected.add(w.id); else this.selected.delete(w.id); });
+        row.createEl('span',{text:` ${w.spelling}${w.pos?' ['+w.pos+']':''}${w.gender?' ('+w.gender+')':''}`,cls:'conlang-batch-word'});
+      });
+    };
+    redraw();
+    const btnRow=contentEl.createDiv('conlang-modal-buttons');
+    btnRow.createEl('button',{text:'Assign',cls:'mod-cta'}).addEventListener('click',()=>{
+      if(!this.targetClassId){new obsidian.Notice('Select a class first');return;}
+      const n=this.selected.size;
+      (this.dict.words||[]).forEach(w=>{ if(this.selected.has(w.id)) w.morphClassId=this.targetClassId; });
+      this.onSave(); this.close();
+      new obsidian.Notice(`Assigned ${n} word(s) to class.`);
+    });
+    btnRow.createEl('button',{text:'Cancel'}).addEventListener('click',()=>this.close());
+  }
+  onClose(){this.contentEl.empty();}
+}
+
+class MorphClassPresetModal extends obsidian.Modal {
+  constructor(app, dict, onSelect){ super(app); this.dict=dict; this.onSelect=onSelect; }
+  onOpen(){
+    const {contentEl}=this; contentEl.empty(); contentEl.createEl('h2',{text:'Load Morph Class Preset'});
+    Object.entries(MORPH_CLASS_PRESETS).forEach(([name,preset])=>{
+      const row=contentEl.createDiv('conlang-batch-row');
+      row.style.cssText='padding:8px;cursor:pointer;border-bottom:1px solid var(--background-modifier-border)';
+      row.createEl('strong',{text:name});
+      row.createEl('span',{text:` — ${preset.type}`,cls:'conlang-muted'});
+      row.addEventListener('click',()=>{
+        const mc=Object.assign({id:genId(),name,applicableGenders:[]},JSON.parse(JSON.stringify(preset)));
+        this.onSelect(mc); this.close();
+      });
+    });
+    contentEl.createDiv('conlang-modal-buttons').createEl('button',{text:'Cancel'}).addEventListener('click',()=>this.close());
   }
   onClose(){this.contentEl.empty();}
 }
@@ -1227,6 +1659,7 @@ class DictionaryStorage {
       name, language: language || name,
       words: [], roots: [],
       soundChanges: [], paradigms: [],
+      morphClasses: [], grammar: {},
       cases: [], numbers: ['sg','pl'],
       useCases: false, parentDictionary: null,
       useGenders: false, genders: [],
@@ -1266,6 +1699,7 @@ class WordModal extends obsidian.Modal {
       : { id: genId(), spelling:'', pronunciation:'', pos:'', translation:'',
           definition:'', example:'', root:'', etymology:'', gender:'',
           thesaurusCategory:'', thesaurusEntry:'', ancestorWordId:null,
+          morphClassId: null, morphAutoForms: {},
           conjugationForms:{}, declensionForms:{},
           customFields:{}, createdAt: new Date().toISOString() };
     this.onSave = onSave;
@@ -1374,6 +1808,27 @@ class WordModal extends obsidian.Modal {
       this.word.customFields[`field_${genId()}`] = '';
       renderCF();
     });
+
+    // ── Morphological Class ──
+    if (this.dict) {
+      const morphClasses = this.dict.morphClasses || [];
+      const isVerb = /^v(erb)?$/i.test(this.word.pos || '');
+      const applicable = morphClasses.filter(mc => {
+        if (mc.type === 'conjugation' && !isVerb) return false;
+        if (mc.type === 'declension'   &&  isVerb) return false;
+        if (mc.applicableGenders && mc.applicableGenders.length && this.word.gender)
+          if (!mc.applicableGenders.includes(this.word.gender)) return false;
+        return true;
+      });
+      if (applicable.length) {
+        new obsidian.Setting(contentEl).setName('Morphological Class').addDropdown(d => {
+          d.addOption('', '— None —');
+          applicable.forEach(mc => d.addOption(mc.id, `[${mc.type}] ${mc.name}`));
+          d.setValue(this.word.morphClassId || '');
+          d.onChange(v => { this.word.morphClassId = v || null; });
+        });
+      }
+    }
 
     // ── Buttons ──
     const btnRow = contentEl.createDiv('conlang-modal-buttons');
@@ -1686,12 +2141,31 @@ async function applyToNewDict(plugin, sourceDict, rs, childName) {
       ancestorWordId: w.id, conjugationForms: {}, declensionForms: {},
       createdAt: new Date().toISOString() };
   });
-  child.paradigms = JSON.parse(JSON.stringify(sourceDict.paradigms || []));
+  child.paradigms   = JSON.parse(JSON.stringify(sourceDict.paradigms || []));
+  child.morphClasses = JSON.parse(JSON.stringify(sourceDict.morphClasses || []));
+  child.grammar     = JSON.parse(JSON.stringify(sourceDict.grammar || {}));
   child.cases   = [...(sourceDict.cases || [])];
   child.numbers = [...(sourceDict.numbers || ['sg','pl'])];
   child.useCases  = sourceDict.useCases;
   child.useGenders = sourceDict.useGenders;
   child.genders   = [...(sourceDict.genders || [])];
+  // Propagate sound changes to inflected forms
+  child.words.forEach(cw => {
+    const sw = sourceDict.words.find(w => w.id === cw.ancestorWordId);
+    if (!sw) return;
+    const applyToForm = f => { let v=f; (rs.rules||[]).forEach(r=>{v=applyRuleToIPA(v,r,phon);}); return applyOrthography(v,ortho); };
+    const conjForms = {};
+    Object.entries(sw.conjugationForms || {}).forEach(([pid,forms]) => {
+      conjForms[pid] = {};
+      Object.entries(forms).forEach(([key,val]) => { if(val) conjForms[pid][key] = applyToForm(val); });
+    });
+    const declForms = {};
+    Object.entries(sw.declensionForms || {}).forEach(([key,val]) => { if(val) declForms[key] = applyToForm(val); });
+    cw.conjugationForms = conjForms;
+    cw.declensionForms  = declForms;
+    cw.morphClassId     = sw.morphClassId || null;
+    cw.morphAutoForms   = JSON.parse(JSON.stringify(sw.morphAutoForms || {}));
+  });
   await plugin.storage.save(child);
   if (noPron > 0) new obsidian.Notice(`⚠ ${noPron} words had no IPA — spelling used as fallback.`, 6000);
   return child;
@@ -1957,6 +2431,7 @@ class DictionaryView extends obsidian.ItemView {
       ['words',    `Words (${this.dict.words.length})`],
       ['roots',    `Roots (${this.dict.roots.length})`],
       ['phonology','Phonology'],
+      ['grammar',  'Grammar'],
       ['sounds',   `Sounds (${(this.dict.soundChanges||[]).length})`],
       ['paradigms',`Paradigms (${(this.dict.paradigms||[]).length})`],
     ];
@@ -2015,6 +2490,7 @@ class DictionaryView extends obsidian.ItemView {
     else if (this.tab==='roots') this._renderRoots(this._listEl);
     else if (this.tab==='phonology') this._renderPhonology(this._listEl);
     else if (this.tab==='sounds') this._renderSounds(this._listEl);
+    else if (this.tab==='grammar')   this._renderGrammar(this._listEl);
     else if (this.tab==='paradigms') this._renderParadigms(this._listEl);
   }
 
@@ -2069,6 +2545,10 @@ class DictionaryView extends obsidian.ItemView {
       const posCell = row.createEl('span', { cls:'conlang-cell conlang-pos' });
       posCell.appendText(w.pos||'—');
       if (w.gender) posCell.createEl('span', { text:w.gender, cls:'conlang-gender-badge' });
+      if (w.morphClassId) {
+        const mc=(this.dict.morphClasses||[]).find(c=>c.id===w.morphClassId);
+        if(mc) posCell.createEl('span',{text:mc.name,cls:'conlang-mc-badge'});
+      }
       row.createEl('span', { text:w.translation||w.definition||'—', cls:'conlang-cell conlang-trans' });
       const ac = row.createEl('span', { cls:'conlang-row-acts' });
       this._iconBtn(ac,'✎','Edit',  e => { e.stopPropagation(); this.doEditWord(w); });
@@ -2243,6 +2723,136 @@ class DictionaryView extends obsidian.ItemView {
       this.dict = null;
       await this.render();
     }).open();
+  }
+
+  // ── Grammar Tab ──
+  _renderGrammar(el) {
+    this.dict.morphClasses = this.dict.morphClasses || [];
+    this.dict.grammar = this.dict.grammar || {};
+    const g = this.dict.grammar;
+    const save = () => this.plugin.storage.save(this.dict);
+
+    // ── Section A: Typological Profile ──
+    const secA = el.createDiv('conlang-grammar-section');
+    secA.createEl('h3',{text:'Typological Profile'});
+    const presetRow = secA.createDiv(); presetRow.createEl('span',{text:'Load preset: ',cls:'conlang-muted'});
+    const TYPO_PRESETS = {
+      'Like Latin':    {wordOrder:'SOV',headDirection:'mixed',adpositions:'prepositions', adjOrder:'before-noun',alignment:'nominative',morphType:'fusional'},
+      'Like Japanese': {wordOrder:'SOV',headDirection:'head-final',adpositions:'postpositions',adjOrder:'before-noun',alignment:'nominative',morphType:'agglutinative'},
+      'Like Arabic':   {wordOrder:'VSO',headDirection:'head-initial',adpositions:'prepositions',adjOrder:'after-noun',alignment:'nominative',morphType:'fusional'},
+      'Like Turkish':  {wordOrder:'SOV',headDirection:'head-final',adpositions:'postpositions',adjOrder:'before-noun',alignment:'nominative',morphType:'agglutinative'},
+      'Like Mandarin': {wordOrder:'SVO',headDirection:'head-initial',adpositions:'prepositions',adjOrder:'before-noun',alignment:'nominative',morphType:'isolating'},
+      'Like Swahili':  {wordOrder:'SVO',headDirection:'head-initial',adpositions:'prepositions',adjOrder:'after-noun',alignment:'nominative',morphType:'agglutinative'},
+    };
+    Object.keys(TYPO_PRESETS).forEach(name=>{
+      presetRow.createEl('button',{text:name,cls:'conlang-phon-preset-btn'}).addEventListener('click',async()=>{
+        Object.assign(g,TYPO_PRESETS[name]); await save(); this.refreshList();
+      });
+    });
+    const grid = secA.createDiv('conlang-grammar-typology');
+    const addDropdown = (label, key, options) => {
+      grid.createEl('label',{text:label});
+      const sel = grid.createEl('select');
+      options.forEach(([v,t])=>{ const o=sel.createEl('option',{text:t,value:v}); if(g[key]===v) o.selected=true; });
+      sel.addEventListener('change',async()=>{ g[key]=sel.value; await save(); });
+    };
+    addDropdown('Word Order', 'wordOrder', [['SOV','SOV'],['SVO','SVO'],['VSO','VSO'],['VOS','VOS'],['OVS','OVS'],['OSV','OSV'],['free','Free']]);
+    addDropdown('Head Direction','headDirection',[['head-initial','Head-initial'],['head-final','Head-final'],['mixed','Mixed']]);
+    addDropdown('Adpositions','adpositions',[['prepositions','Prepositions'],['postpositions','Postpositions'],['both','Both']]);
+    addDropdown('Adjective Order','adjOrder',[['before-noun','Before noun'],['after-noun','After noun'],['both','Both']]);
+    addDropdown('Alignment','alignment',[['nominative','Nominative-Accusative'],['ergative','Ergative-Absolutive'],['active','Active-Stative'],['tripartite','Tripartite']]);
+    addDropdown('Morph. Type','morphType',[['isolating','Isolating'],['agglutinative','Agglutinative'],['fusional','Fusional'],['polysynthetic','Polysynthetic']]);
+    secA.createEl('label',{text:'Grammar Notes',cls:'conlang-muted'});
+    const notesTA = secA.createEl('textarea',{cls:'conlang-phon-input',placeholder:'Free notes about grammar…'});
+    notesTA.style.cssText='height:80px;resize:vertical;margin-top:4px;';
+    notesTA.value = g.notes || '';
+    notesTA.addEventListener('input',async()=>{ g.notes=notesTA.value; await save(); });
+
+    // ── Section B: Morphological Classes ──
+    const secB = el.createDiv('conlang-grammar-section');
+    secB.createEl('h3',{text:'Morphological Classes'});
+    const classes = this.dict.morphClasses;
+    if(!classes.length) secB.createEl('p',{text:'No classes defined yet.',cls:'conlang-muted'});
+    classes.forEach(mc=>{
+      const card = secB.createDiv('conlang-mc-card');
+      const hdr = card.createDiv('conlang-mc-card-header');
+      const left = hdr.createDiv();
+      left.createEl('span',{text:mc.type,cls:'conlang-mc-type'});
+      left.createEl('span',{text:mc.name,cls:'conlang-mc-name'});
+      const meta = card.createDiv('conlang-mc-meta');
+      const paradigm=(this.dict.paradigms||[]).find(p=>p.id===mc.paradigmId);
+      const ruleCount=Object.keys(mc.rules||{}).length;
+      const wordCount=(this.dict.words||[]).filter(w=>w.morphClassId===mc.id).length;
+      meta.textContent=`${paradigm?'Paradigm: '+paradigm.name+' · ':''}${ruleCount} rules · ${wordCount} words assigned`;
+      if(mc.applicableGenders&&mc.applicableGenders.length) meta.textContent+=` · Genders: ${mc.applicableGenders.join(', ')}`;
+      const acts = hdr.createDiv();
+      acts.createEl('button',{text:'✎ Edit',cls:'conlang-icon-btn'}).addEventListener('click',()=>{
+        new MorphClassEditorModal(this.app,this.dict,mc,async updated=>{
+          const i=classes.findIndex(c=>c.id===mc.id);
+          if(i>=0) classes[i]=updated; await save(); this.refreshList();
+        }).open();
+      });
+      acts.createEl('button',{text:'✕',cls:'conlang-icon-btn conlang-del-btn'}).addEventListener('click',async()=>{
+        if(!confirm(`Delete class "${mc.name}"?`)) return;
+        this.dict.morphClasses=classes.filter(c=>c.id!==mc.id);
+        await save(); this.refreshList();
+      });
+    });
+    const newBtnRow = secB.createDiv('conlang-modal-buttons');
+    ['declension','conjugation'].forEach(type=>{
+      newBtnRow.createEl('button',{text:`+ New ${type[0].toUpperCase()+type.slice(1)} Class`,cls:'conlang-phon-preset-btn'})
+        .addEventListener('click',()=>{
+          const stub={id:genId(),name:'New Class',type,paradigmId:'',applicableGenders:[],stemRule:'root',rules:{},morphophonRules:[]};
+          new MorphClassEditorModal(this.app,this.dict,stub,async saved=>{
+            this.dict.morphClasses.push(saved); await save(); this.refreshList();
+          }).open();
+        });
+    });
+    // Preset loader
+    newBtnRow.createEl('button',{text:'Load Preset…',cls:'conlang-phon-preset-btn'}).addEventListener('click',()=>{
+      new MorphClassPresetModal(this.app,this.dict,async mc=>{
+        this.dict.morphClasses.push(mc); await save(); this.refreshList();
+      }).open();
+    });
+
+    // ── Section C: Batch Actions ──
+    const secC = el.createDiv('conlang-grammar-section');
+    secC.createEl('h3',{text:'Batch Actions'});
+    const overwriteRow = secC.createDiv(); overwriteRow.style.marginBottom='8px';
+    const overwriteChk = overwriteRow.createEl('input',{type:'checkbox'}); overwriteChk.style.marginRight='6px';
+    overwriteRow.createEl('label',{text:'Overwrite existing forms when auto-filling'});
+
+    secC.createEl('button',{text:'⚡ Auto-fill all forms',cls:'mod-cta'}).addEventListener('click',async()=>{
+      const mcs=this.dict.morphClasses||[];
+      if(!mcs.length){new obsidian.Notice('No morph classes defined.');return;}
+      let wordCount=0, formCount=0;
+      const overwrite=overwriteChk.checked;
+      this.dict.words.forEach(w=>{
+        if(!w.morphClassId) return;
+        const mc=mcs.find(c=>c.id===w.morphClassId); if(!mc) return;
+        const gen=generateForms(w,mc,this.dict);
+        if(!w.morphAutoForms) w.morphAutoForms={};
+        Object.entries(gen.conjugationForms).forEach(([pid,forms])=>{
+          if(!w.conjugationForms) w.conjugationForms={};
+          if(!w.conjugationForms[pid]) w.conjugationForms[pid]={};
+          Object.entries(forms).forEach(([key,val])=>{
+            if((overwrite||!w.conjugationForms[pid][key])&&val){w.conjugationForms[pid][key]=val;w.morphAutoForms[key]=true;formCount++;}
+          });
+        });
+        Object.entries(gen.declensionForms).forEach(([key,val])=>{
+          if(!w.declensionForms) w.declensionForms={};
+          if((overwrite||!w.declensionForms[key])&&val){w.declensionForms[key]=val;w.morphAutoForms[key]=true;formCount++;}
+        });
+        wordCount++;
+      });
+      await save();
+      new obsidian.Notice(`Updated ${wordCount} words, ${formCount} forms generated.`);
+    });
+    secC.createEl('button',{text:'Assign class to words…',cls:'conlang-phon-preset-btn'}).addEventListener('click',()=>{
+      new BatchMorphAssignModal(this.app,this.dict,async()=>{
+        await save(); this.refreshList();
+      }).open();
+    });
   }
 
   // ── Paradigms Tab ──
@@ -2470,7 +3080,7 @@ class DictionaryView extends obsidian.ItemView {
     new ConjugationFormModal(this.app, word, this.dict.paradigms||[], async forms=>{
       const i=this.dict.words.findIndex(w=>w.id===word.id);
       if(i>=0){this.dict.words[i].conjugationForms=forms;await this.plugin.storage.save(this.dict);this.render();}
-    }).open();
+    }, this.dict).open();
   }
 
   doDeclension(word) {
@@ -3370,7 +3980,45 @@ class ConlangDictionaryPlugin extends obsidian.Plugin {
 .conlang-gen-table input[type="text"]:focus { outline:1px solid var(--interactive-accent); border-radius:2px; }
 .conlang-gen-count { font-size:12px; color:var(--text-muted); margin:8px 0; }
 .conlang-gen-actions { display:flex; gap:8px; margin-top:12px; }
+
+/* ── Grammar tab ── */
+.conlang-grammar-section { margin-bottom:24px; }
+.conlang-grammar-section h3 { margin:0 0 8px; font-size:14px; font-weight:600; }
+.conlang-grammar-typology { display:grid; grid-template-columns:160px 1fr; gap:4px 12px; align-items:center; margin:8px 0 12px; }
+.conlang-grammar-typology label { font-size:13px; color:var(--text-muted); text-align:right; }
+.conlang-grammar-typology select { font-size:13px; }
+
+/* ── Morph class cards ── */
+.conlang-mc-card { border:1px solid var(--background-modifier-border); border-radius:8px; padding:12px; margin-bottom:8px; }
+.conlang-mc-card-header { display:flex; justify-content:space-between; align-items:flex-start; }
+.conlang-mc-name { font-weight:600; font-size:14px; }
+.conlang-mc-type { font-size:11px; color:var(--text-on-accent); background:var(--interactive-accent); padding:1px 6px; border-radius:3px; margin-right:8px; }
+.conlang-mc-meta { font-size:12px; color:var(--text-muted); margin-top:4px; }
+.conlang-mc-preview-row { display:flex; align-items:center; gap:8px; margin:8px 0 4px; font-size:13px; }
+.conlang-mc-preview-lbl { color:var(--text-muted); }
+.conlang-mc-mphr-hdr { margin:16px 0 4px; font-size:13px; }
+
+/* ── Morph class editor modal rules table ── */
+.conlang-mc-rules-table { width:100%; border-collapse:collapse; font-size:13px; margin:8px 0; }
+.conlang-mc-rules-table th { text-align:left; font-size:11px; color:var(--text-muted); padding:4px 8px; border-bottom:1px solid var(--background-modifier-border); }
+.conlang-mc-rules-table td { padding:4px 8px; border-bottom:1px solid var(--background-modifier-border); }
+.conlang-mc-rules-table select { font-size:12px; width:100px; }
+.conlang-mc-rules-table input { font-size:13px; width:80px; font-family:monospace; }
+.conlang-mc-preview { color:var(--text-accent); font-style:italic; font-size:12px; font-family:monospace; }
+
+/* ── Auto-generated form badge ── */
+.conlang-auto-badge { font-size:9px; color:var(--text-muted); background:var(--background-modifier-form-field); padding:0 4px; border-radius:2px; margin-left:4px; vertical-align:middle; }
+.conlang-auto-input { color:var(--text-muted); }
+
+/* ── Morph class badge in word list ── */
+.conlang-mc-badge { font-size:10px; color:var(--text-muted); background:var(--background-modifier-form-field); padding:1px 5px; border-radius:3px; margin-left:6px; }
+
+/* ── Batch assign modal ── */
+.conlang-batch-list { max-height:350px; overflow-y:auto; border:1px solid var(--background-modifier-border); border-radius:6px; margin:8px 0; }
+.conlang-batch-row { display:flex; align-items:center; padding:5px 10px; border-bottom:1px solid var(--background-modifier-border); font-size:13px; }
+.conlang-batch-word { margin-left:4px; }
 `;
+
 
 
     document.head.appendChild(s);
