@@ -237,6 +237,98 @@ function applyOrthography(ipa, orthoRules) {
   return result;
 }
 
+function reverseOrthography(spelling, orthoRules) {
+  if (!orthoRules || !orthoRules.length) return spelling;
+  const sorted = [...orthoRules].sort((a, b) => b.spelling.length - a.spelling.length);
+  let result = spelling;
+  for (const rule of sorted) {
+    result = result.split(rule.spelling).join(rule.ipa);
+  }
+  return result;
+}
+
+function applyRuleToIPA(ipa, rule, phon) {
+  const { from, to, env } = rule;
+  if (!from) return ipa;
+  try {
+    const consonants = phon.consonants || [];
+    const vowels = phon.vowels || [];
+
+    const sortByLen = arr => [...arr].sort((a, b) => b.length - a.length);
+    const toAlt = arr => arr.length
+      ? '(?:' + sortByLen(arr).map(p => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')'
+      : '[^\\s]';
+
+    const V = toAlt(vowels);
+    const C = toAlt(consonants);
+
+    const nasalSet     = new Set(['m','ɱ','n','ɳ','ɲ','ŋ','ɴ']);
+    const fricativeSet = new Set(['ɸ','β','f','v','θ','ð','s','z','ʃ','ʒ','ʂ','ʐ','ç','ʝ','x','ɣ','χ','ʁ','ħ','ʕ','h','ɦ','ɬ','ɮ']);
+    const liquidSet    = new Set(['l','ɭ','ʎ','ʟ','r','ɹ','ɻ','ɾ','ɽ','ʀ','ʁ']);
+    const plosiveSet   = new Set(['p','b','t','d','ʈ','ɖ','c','ɟ','k','g','q','ɢ','ʔ']);
+    const approxSet    = new Set(['ʋ','ɹ','ɻ','j','ɰ','w','l','ɭ','ʎ','ʟ']);
+
+    const N = toAlt(consonants.filter(c => nasalSet.has(c)));
+    const F = toAlt(consonants.filter(c => fricativeSet.has(c)));
+    const L = toAlt(consonants.filter(c => liquidSet.has(c)));
+    const P = toAlt(consonants.filter(c => plosiveSet.has(c)));
+    const A = toAlt(consonants.filter(c => approxSet.has(c)));
+
+    const highV  = new Set(['i','y','ɨ','ʉ','ɯ','u','ɪ','ʏ','ʊ']);
+    const midV   = new Set(['e','ø','ɘ','ɵ','ɤ','o','ə','ɛ','œ','ɜ','ɞ','ʌ','ɔ']);
+    const lowV   = new Set(['æ','ɐ','a','ɶ','ɑ','ɒ']);
+    const frontV = new Set(['i','y','ɪ','ʏ','e','ø','ɛ','œ','æ','a','ɶ']);
+    const backV  = new Set(['ɯ','u','ʊ','ɤ','o','ʌ','ɔ','ɑ','ɒ']);
+    const roundV = new Set(['y','ʉ','u','ʏ','ʊ','ø','ɵ','o','œ','ɞ','ɔ','ɶ','ɒ']);
+
+    const Vh = toAlt(vowels.filter(v => highV.has(v)));
+    const Vm = toAlt(vowels.filter(v => midV.has(v)));
+    const Vl = toAlt(vowels.filter(v => lowV.has(v)));
+    const Vf = toAlt(vowels.filter(v => frontV.has(v)));
+    const Vb = toAlt(vowels.filter(v => backV.has(v)));
+    const Vr = toAlt(vowels.filter(v => roundV.has(v)));
+
+    const voicedCSet    = new Set(['b','d','ɖ','ɟ','g','ɢ','m','ɱ','n','ɳ','ɲ','ŋ','ɴ','ʙ','r','ʀ','ɾ','ɽ','β','v','ð','z','ʒ','ʐ','ʝ','ɣ','ʁ','ʕ','ɦ','ɮ','ʋ','ɹ','ɻ','j','ɰ','w','l','ɭ','ʎ','ʟ']);
+    const voicelessCSet = new Set(['p','t','ʈ','c','k','q','ʔ','ɸ','f','θ','s','ʃ','ʂ','ç','x','χ','ħ','h','ɬ']);
+    const Cv = toAlt(consonants.filter(c => voicedCSet.has(c)));
+    const Cu = toAlt(consonants.filter(c => voicelessCSet.has(c)));
+
+    const classMap = {
+      'Vh': Vh, 'Vm': Vm, 'Vl': Vl,
+      'Vf': Vf, 'Vb': Vb, 'Vr': Vr,
+      'Cv': Cv, 'Cu': Cu,
+      'V': V, 'C': C, 'N': N, 'F': F, 'L': L, 'P': P, 'A': A,
+    };
+
+    function resolveClasses(str) {
+      if (!str) return '';
+      let result = str.replace(/#/g, '(?:^|$)');
+      const keys = Object.keys(classMap).sort((a, b) => b.length - a.length);
+      for (const key of keys) {
+        result = result.replace(new RegExp(key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), classMap[key]);
+      }
+      return result;
+    }
+
+    const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const hasClass = Object.keys(classMap).some(k => from.includes(k)) || from.includes('#');
+    const fromPat = hasClass ? resolveClasses(from) : esc(from);
+
+    let pre = '', post = '';
+    if (env) {
+      const ui = env.indexOf('_');
+      if (ui >= 0) { pre = resolveClasses(env.substring(0, ui)); post = resolveClasses(env.substring(ui + 1)); }
+    }
+
+    const toStr = (to === 'Ø') ? '' : (to || '');
+    const pat = new RegExp(`(${pre})(${fromPat})(${post})`, 'g');
+    return ipa.replace(pat, `$1${toStr}$3`);
+  } catch (e) {
+    console.warn('Sound change rule error:', e);
+    return ipa;
+  }
+}
+
 // ─── Word Generator Engine ────────────────────────────────────────────────────
 const NASALS     = new Set(['m','ɱ','n','ɳ','ɲ','ŋ','ɴ']);
 const FRICATIVES = new Set(['ɸ','β','f','v','θ','ð','s','z','ʃ','ʒ','ʂ','ʐ','ç','ʝ','x','ɣ','χ','ʁ','ħ','ʕ','h','ɦ','ɬ','ɮ']);
@@ -1571,6 +1663,230 @@ class WordGeneratorModal extends obsidian.Modal {
   onClose() { this.contentEl.empty(); }
 }
 
+// ─── Sound Change helpers ─────────────────────────────────────────────────────
+
+async function applyToNewDict(plugin, sourceDict, rs, childName) {
+  const phon = sourceDict.phonology || {};
+  const ortho = sourceDict.orthography || [];
+  const child = await plugin.storage.create(childName, `${sourceDict.language || sourceDict.name} (evolved)`);
+  child.parentDictionary = sourceDict.name;
+  child.phonology   = JSON.parse(JSON.stringify(phon));
+  child.orthography = JSON.parse(JSON.stringify(ortho));
+  child.appliedSoundChanges = {
+    sourceDict: sourceDict.name, ruleSetName: rs.name,
+    rules: [...(rs.rules||[])], appliedAt: new Date().toISOString()
+  };
+  const noPron = sourceDict.words.filter(w => !w.pronunciation).length;
+  child.words = sourceDict.words.map(w => {
+    const origIPA = w.pronunciation || w.spelling;
+    let evolvedIPA = origIPA;
+    (rs.rules||[]).forEach(r => { evolvedIPA = applyRuleToIPA(evolvedIPA, r, phon); });
+    return { ...w, id: genId(), pronunciation: evolvedIPA,
+      spelling: applyOrthography(evolvedIPA, ortho),
+      ancestorWordId: w.id, conjugationForms: {}, declensionForms: {},
+      createdAt: new Date().toISOString() };
+  });
+  child.paradigms = JSON.parse(JSON.stringify(sourceDict.paradigms || []));
+  child.cases   = [...(sourceDict.cases || [])];
+  child.numbers = [...(sourceDict.numbers || ['sg','pl'])];
+  child.useCases  = sourceDict.useCases;
+  child.useGenders = sourceDict.useGenders;
+  child.genders   = [...(sourceDict.genders || [])];
+  await plugin.storage.save(child);
+  if (noPron > 0) new obsidian.Notice(`⚠ ${noPron} words had no IPA — spelling used as fallback.`, 6000);
+  return child;
+}
+
+async function applyToExistingDict(plugin, sourceDict, rs, targetDictName) {
+  const phon = sourceDict.phonology || {};
+  const ortho = sourceDict.orthography || [];
+  const target = await plugin.storage.load(targetDictName);
+  if (!target) throw new Error('Target dictionary not found');
+  let updated = 0, added = 0;
+  sourceDict.words.forEach(srcWord => {
+    const origIPA = srcWord.pronunciation || srcWord.spelling;
+    let evolvedIPA = origIPA;
+    (rs.rules||[]).forEach(r => { evolvedIPA = applyRuleToIPA(evolvedIPA, r, phon); });
+    const newSpelling = applyOrthography(evolvedIPA, ortho);
+    const existing = target.words.find(w => w.ancestorWordId === srcWord.id);
+    if (existing) { existing.pronunciation = evolvedIPA; existing.spelling = newSpelling; updated++; }
+    else {
+      target.words.push({ ...srcWord, id: genId(), pronunciation: evolvedIPA,
+        spelling: newSpelling, ancestorWordId: srcWord.id,
+        conjugationForms: {}, declensionForms: {}, createdAt: new Date().toISOString() });
+      added++;
+    }
+  });
+  target.appliedSoundChanges = {
+    sourceDict: sourceDict.name, ruleSetName: rs.name,
+    rules: [...(rs.rules||[])], appliedAt: new Date().toISOString()
+  };
+  target.updatedAt = new Date().toISOString();
+  await plugin.storage.save(target);
+  new obsidian.Notice(`Updated ${updated} words, added ${added} in "${targetDictName}".`);
+  return target;
+}
+
+// ─── Sound Change Preview Modal ───────────────────────────────────────────────
+class SoundChangePreviewModal extends obsidian.Modal {
+  constructor(app, dict, rs) {
+    super(app);
+    this.dict = dict;
+    this.rs = rs;
+  }
+
+  onOpen() {
+    const { contentEl, modalEl } = this;
+    modalEl.style.maxWidth = '720px';
+    contentEl.empty();
+    contentEl.createEl('h2', { text: `Preview: ${this.rs.name || 'Sound Changes'}` });
+
+    const rulesSummary = contentEl.createDiv('conlang-sc-preview-rules');
+    rulesSummary.createEl('h4', { text: 'Rules applied (in order):' });
+    const ol = rulesSummary.createEl('ol');
+    (this.rs.rules || []).forEach(r => {
+      if (!r.from) return;
+      const text = `${r.from} → ${r.to || 'Ø'}${r.env ? ' / ' + r.env : ''}${r.desc ? '  (' + r.desc + ')' : ''}`;
+      ol.createEl('li', { text, cls: 'conlang-sc-preview-rule' });
+    });
+
+    const phon  = this.dict.phonology || {};
+    const ortho = this.dict.orthography || [];
+    const words = this.dict.words || [];
+    const noPron = words.filter(w => !w.pronunciation).length;
+    if (noPron > 0) {
+      contentEl.createEl('p', {
+        text: `⚠ ${noPron} words have no IPA set. Sound changes will use their spelling as fallback.`,
+        cls: 'conlang-sc-warn'
+      });
+    }
+
+    const wrap = contentEl.createDiv('conlang-gen-preview');
+    const table = wrap.createEl('table', { cls: 'conlang-gen-table' });
+    const thead = table.createEl('thead').createEl('tr');
+    ['Original IPA', 'Evolved IPA', 'New Spelling', 'Translation'].forEach(h =>
+      thead.createEl('th', { text: h }));
+
+    const tbody = table.createEl('tbody');
+    let changed = 0;
+    words.forEach(w => {
+      const origIPA = w.pronunciation || w.spelling;
+      let evolvedIPA = origIPA;
+      (this.rs.rules || []).forEach(r => { evolvedIPA = applyRuleToIPA(evolvedIPA, r, phon); });
+      const newSpelling = applyOrthography(evolvedIPA, ortho);
+      const isChanged = evolvedIPA !== origIPA;
+      if (isChanged) changed++;
+      const tr = tbody.createEl('tr');
+      if (isChanged) tr.style.fontWeight = '600';
+      tr.createEl('td', { text: origIPA });
+      tr.createEl('td', { text: evolvedIPA });
+      tr.createEl('td', { text: newSpelling });
+      tr.createEl('td', { text: w.translation || '—' });
+    });
+
+    contentEl.createEl('p', {
+      text: `${changed} / ${words.length} words affected.`,
+      cls: 'conlang-phon-count'
+    });
+
+    const btns = contentEl.createDiv('conlang-modal-buttons');
+    btns.createEl('button', { text: 'Close', cls: 'mod-cta' })
+      .addEventListener('click', () => this.close());
+  }
+
+  onClose() { this.contentEl.empty(); }
+}
+
+// ─── Apply Sound Changes Modal ────────────────────────────────────────────────
+class ApplySoundChangesModal extends obsidian.Modal {
+  constructor(app, sourceDict, ruleSet, plugin, onApplied) {
+    super(app);
+    this.sourceDict = sourceDict;
+    this.rs = ruleSet;
+    this.plugin = plugin;
+    this.onApplied = onApplied;
+    this.mode = 'new';
+    this.newName = `${sourceDict.name}-evolved`;
+    this.existingName = '';
+    this.childDicts = [];
+  }
+
+  async onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl('h2', { text: `Apply: ${this.rs.name || 'Sound Changes'}` });
+
+    const allNames = await this.plugin.storage.list();
+    this.childDicts = [];
+    for (const n of allNames) {
+      if (n === this.sourceDict.name) continue;
+      const d = await this.plugin.storage.load(n);
+      if (d && d.parentDictionary === this.sourceDict.name) this.childDicts.push(n);
+    }
+
+    // ── Option A ──
+    const secA = contentEl.createDiv('conlang-sc-apply-sec');
+    const radA = secA.createEl('input', { type: 'radio', attr: { name: 'scmode', value: 'new' } });
+    secA.createEl('label', { text: ' Create new child dictionary' });
+    const nameRow = secA.createDiv('conlang-sc-apply-row');
+    nameRow.createEl('span', { text: 'Name: ' });
+    const nameInp = nameRow.createEl('input', { type: 'text', value: this.newName, cls: 'conlang-sc-nameinp' });
+    nameInp.style.width = '200px';
+    nameInp.addEventListener('input', () => { this.newName = nameInp.value; });
+
+    // ── Option B ──
+    const secB = contentEl.createDiv('conlang-sc-apply-sec');
+    const radB = secB.createEl('input', { type: 'radio', attr: { name: 'scmode', value: 'existing' } });
+    secB.createEl('label', { text: ' Update existing child dictionary' });
+    if (this.childDicts.length) {
+      const sel = secB.createEl('select', { cls: 'conlang-sc-apply-sel' });
+      sel.style.marginLeft = '8px';
+      this.childDicts.forEach(n => sel.createEl('option', { text: n, value: n }));
+      this.existingName = this.childDicts[0];
+      sel.addEventListener('change', () => { this.existingName = sel.value; });
+    } else {
+      secB.createEl('span', { text: ' (no child dictionaries found)', cls: 'conlang-muted' });
+      radB.disabled = true;
+    }
+
+    radA.checked = true;
+    radA.addEventListener('change', () => { this.mode = 'new'; });
+    radB.addEventListener('change', () => { this.mode = 'existing'; });
+
+    const btns = contentEl.createDiv('conlang-modal-buttons');
+    btns.style.marginTop = '16px';
+
+    const applyBtn = btns.createEl('button', { text: 'Apply', cls: 'mod-cta' });
+    applyBtn.addEventListener('click', async () => {
+      applyBtn.disabled = true;
+      applyBtn.textContent = 'Applying…';
+      try {
+        let result;
+        if (this.mode === 'new') {
+          if (!this.newName.trim()) { new obsidian.Notice('Please enter a name.'); applyBtn.disabled = false; applyBtn.textContent = 'Apply'; return; }
+          const names = await this.plugin.storage.list();
+          if (names.includes(this.newName.trim())) { new obsidian.Notice(`"${this.newName.trim()}" already exists.`); applyBtn.disabled = false; applyBtn.textContent = 'Apply'; return; }
+          result = await applyToNewDict(this.plugin, this.sourceDict, this.rs, this.newName.trim());
+          new obsidian.Notice(`Created "${result.name}" with ${result.words.length} evolved words.`);
+        } else {
+          if (!this.existingName) { new obsidian.Notice('No target selected.'); applyBtn.disabled = false; applyBtn.textContent = 'Apply'; return; }
+          result = await applyToExistingDict(this.plugin, this.sourceDict, this.rs, this.existingName);
+        }
+        this.close();
+        if (this.onApplied) await this.onApplied(result);
+      } catch(e) {
+        new obsidian.Notice('Error: ' + e.message);
+        applyBtn.disabled = false; applyBtn.textContent = 'Apply';
+      }
+    });
+
+    btns.createEl('button', { text: 'Cancel' })
+      .addEventListener('click', () => this.close());
+  }
+
+  onClose() { this.contentEl.empty(); }
+}
+
 // ─── Dictionary Sidebar View ──────────────────────────────────────────────────
 class DictionaryView extends obsidian.ItemView {
   constructor(leaf, plugin) {
@@ -1703,6 +2019,21 @@ class DictionaryView extends obsidian.ItemView {
   }
 
   _renderWords(el) {
+    if (this.dict.appliedSoundChanges && this.dict.parentDictionary) {
+      const banner = el.createDiv('conlang-sc-outdated');
+      banner.createEl('span', { text: 'ℹ This dictionary was evolved from a parent. Sound changes may have changed since last applied.' });
+      const reapplyBtn = banner.createEl('button', { text: 'Re-apply sound changes' });
+      reapplyBtn.addEventListener('click', async () => {
+        const parent = await this.plugin.storage.load(this.dict.parentDictionary);
+        if (!parent) { new obsidian.Notice('Parent dictionary not found.'); return; }
+        const rs = this.dict.appliedSoundChanges;
+        try {
+          await applyToExistingDict(this.plugin, parent, rs, this.dictName);
+          this.dict = null;
+          await this.render();
+        } catch(e) { new obsidian.Notice('Error re-applying: ' + e.message); }
+      });
+    }
     let words = [...(this.dict.words||[])];
     const q = this.q.trim().toLowerCase();
     if (q) words = words.filter(w =>
@@ -1822,6 +2153,35 @@ class DictionaryView extends obsidian.ItemView {
   // ── Sound Changes Tab ──
   _renderSounds(el) {
     const sc = this.dict.soundChanges = this.dict.soundChanges||[];
+
+    // ── Collapsible help panel ──
+    const help = el.createEl('details', { cls: 'conlang-sc-help' });
+    help.createEl('summary', { text: 'Rule syntax reference' });
+    const helpBody = help.createDiv();
+    helpBody.innerHTML = `
+      <p><strong>Format:</strong> <code>from → to / environment</code> — operates on <strong>IPA</strong></p>
+      <p><strong>Environment:</strong> Use <code>_</code> for the target position.</p>
+      <table class="conlang-sc-help-table">
+        <tr><td><code>V</code></td><td>Any vowel in your inventory</td></tr>
+        <tr><td><code>C</code></td><td>Any consonant</td></tr>
+        <tr><td><code>N</code></td><td>Nasal (m, n, ŋ…)</td></tr>
+        <tr><td><code>P</code></td><td>Plosive (p, b, t, d, k, g…)</td></tr>
+        <tr><td><code>F</code></td><td>Fricative (f, v, s, z, ʃ…)</td></tr>
+        <tr><td><code>L</code></td><td>Liquid (l, r, ɾ…)</td></tr>
+        <tr><td><code>A</code></td><td>Approximant (j, w…)</td></tr>
+        <tr><td><code>Vh Vm Vl</code></td><td>High / mid / low vowels</td></tr>
+        <tr><td><code>Vf Vb Vr</code></td><td>Front / back / rounded vowels</td></tr>
+        <tr><td><code>Cv Cu</code></td><td>Voiced / voiceless consonants</td></tr>
+        <tr><td><code>#</code></td><td>Word boundary</td></tr>
+        <tr><td><code>Ø</code></td><td>Deletion (use in "To" field)</td></tr>
+      </table>
+      <p><strong>Examples:</strong>
+        <code>k → x / V_V</code> &nbsp;·&nbsp;
+        <code>t → Ø / _#</code> &nbsp;·&nbsp;
+        <code>P → Cv / V_V</code> &nbsp;·&nbsp;
+        <code>e → i / _N</code>
+      </p>`;
+
     const addBtn = el.createEl('button',{text:'+ New Rule Set',cls:'mod-cta conlang-sc-add'});
     if(!sc.length) el.createEl('p',{text:'No sound change rule sets yet. Create one to model diachronic evolution.',cls:'conlang-empty-msg'});
     sc.forEach((rs,rsi)=>{
@@ -1830,22 +2190,37 @@ class DictionaryView extends obsidian.ItemView {
       hdr.createEl('span',{text:rs.name||'Rule Set',cls:'conlang-sc-name'});
       const ac=hdr.createDiv('conlang-sc-acts');
       this._iconBtn(ac,'▶','Preview result on all words',async()=>this._previewSC(rs));
-      this._iconBtn(ac,'⎘','Apply → New Child Dictionary',async()=>this._applySC(rs));
+      this._iconBtn(ac,'⎘','Apply sound changes',async()=>this._applySC(rs));
       this._iconBtn(ac,'✕','Delete',()=>{if(confirm(`Delete "${rs.name}"?`)){sc.splice(rsi,1);this.plugin.storage.save(this.dict);this.render();}}, 'conlang-del-btn');
       const nameInp=sec.createEl('input',{type:'text',value:rs.name,placeholder:'Rule set name',cls:'conlang-sc-nameinp'});
       nameInp.addEventListener('change',()=>{rs.name=nameInp.value;this.plugin.storage.save(this.dict);});
-      // Rules list
       rs.rules=rs.rules||[];
       const rulesEl=sec.createDiv('conlang-sc-rules');
       const drawRules=()=>{
         rulesEl.empty();
         const hrow=rulesEl.createDiv('conlang-sc-rulehdr');
-        ['From','To','Environment','Description',''].forEach(h=>hrow.createEl('span',{text:h}));
+        ['','From','To','Environment','Description',''].forEach(h=>hrow.createEl('span',{text:h}));
         rs.rules.forEach((rule,ri)=>{
           const row=rulesEl.createDiv('conlang-sc-rule');
+          row.setAttribute('draggable','true');
+          row.dataset.ruleIdx=String(ri);
+          row.createEl('span',{text:'⠿',cls:'conlang-sc-drag-handle'});
           const mk=(key,ph)=>{const i=row.createEl('input',{type:'text',value:rule[key]||'',placeholder:ph,cls:'conlang-sc-inp'});i.addEventListener('change',()=>{rule[key]=i.value;this.plugin.storage.save(this.dict);});return i;};
-          mk('from','e.g. a'); mk('to','e.g. e'); mk('env','e.g. _i or #_'); mk('desc','description');
+          mk('from','e.g. k'); mk('to','e.g. x or Ø'); mk('env','e.g. V_V'); mk('desc','description');
           row.createEl('button',{text:'×',cls:'conlang-icon-btn conlang-del-btn'}).addEventListener('click',()=>{rs.rules.splice(ri,1);this.plugin.storage.save(this.dict);drawRules();});
+          row.addEventListener('dragstart',(e)=>{e.dataTransfer.setData('text/plain',String(ri));row.classList.add('is-dragging');});
+          row.addEventListener('dragend',()=>{row.classList.remove('is-dragging');});
+          row.addEventListener('dragover',(e)=>{e.preventDefault();row.classList.add('drag-over');});
+          row.addEventListener('dragleave',()=>{row.classList.remove('drag-over');});
+          row.addEventListener('drop',async(e)=>{
+            e.preventDefault();row.classList.remove('drag-over');
+            const fromIdx=parseInt(e.dataTransfer.getData('text/plain'));
+            if(fromIdx===ri) return;
+            const [moved]=rs.rules.splice(fromIdx,1);
+            rs.rules.splice(ri,0,moved);
+            await this.plugin.storage.save(this.dict);
+            drawRules();
+          });
         });
         rulesEl.createEl('button',{text:'+ Add Rule',cls:'conlang-sc-addrule'}).addEventListener('click',()=>{rs.rules.push({id:genId(),from:'',to:'',env:'',desc:''});this.plugin.storage.save(this.dict);drawRules();});
       };
@@ -1854,55 +2229,20 @@ class DictionaryView extends obsidian.ItemView {
     addBtn.addEventListener('click',()=>{sc.push({id:genId(),name:'New Rule Set',rules:[]});this.plugin.storage.save(this.dict);this.render();});
   }
 
-  _applyRule(word, rule) {
-    const {from,to,env}=rule;
-    if(!from) return word;
-    try {
-      const phon = this.dict.phonology || {};
-      const vowels = (phon.vowels && phon.vowels.length)
-        ? phon.vowels.map(v => v.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).join('|')
-        : 'aeiouáéíóúàèìòùäëïöüâêîôûæœ';
-      const V = `(?:${vowels})`;
-      const C = `(?:(?!${vowels})[^\\s])`;
-      const esc=s=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
-      let pre='',post='';
-      if(env){
-        const parts=env.split('_');
-        pre=(parts[0]||'').replace('#','^(?:^|\\b)').replace(/V/g,V).replace(/C/g,C);
-        post=(parts[1]||'').replace('#','(?:\\b|$)').replace(/V/g,V).replace(/C/g,C);
-      }
-      const pat=new RegExp(`(${pre})(${esc(from)})(${post})`, 'gi');
-      return word.replace(pat,`$1${to}$3`);
-    } catch { return word; }
+  _applyRule(ipa, rule) {
+    return applyRuleToIPA(ipa, rule, this.dict.phonology || {});
   }
 
   async _previewSC(rs) {
-    const words=this.dict.words.slice(0,50);
-    const rows=words.map(w=>{
-      let s=w.spelling;
-      (rs.rules||[]).forEach(r=>{s=this._applyRule(s,r);});
-      return `${w.spelling} → ${s}${w.translation?` (${w.translation})`:''}`;
-    }).join('\n');
-    new obsidian.Notice(`Preview (first 50):\n${rows}`, 8000);
+    new SoundChangePreviewModal(this.app, this.dict, rs).open();
   }
 
   async _applySC(rs) {
-    const childName=`${this.dictName}-evolved`;
-    const names=await this.plugin.storage.list();
-    if(names.includes(childName)){new obsidian.Notice(`"${childName}" already exists.`);return;}
-    const child=await this.plugin.storage.create(childName,`${this.dict.language||this.dictName} (evolved)`);
-    child.parentDictionary=this.dictName;
-    child.words=this.dict.words.map(w=>{
-      let s=w.spelling;
-      (rs.rules||[]).forEach(r=>{s=this._applyRule(s,r);});
-      return {...w,id:genId(),spelling:s,ancestorWordId:w.id,conjugationForms:{},declensionForms:{},createdAt:new Date().toISOString()};
-    });
-    child.paradigms=JSON.parse(JSON.stringify(this.dict.paradigms||[]));
-    child.cases=[...this.dict.cases]; child.numbers=[...this.dict.numbers]; child.useCases=this.dict.useCases;
-    await this.plugin.storage.save(child);
-    this.dictName=childName; this.dict=null;
-    await this.render();
-    new obsidian.Notice(`Created "${childName}" with ${child.words.length} evolved words.`);
+    new ApplySoundChangesModal(this.app, this.dict, rs, this.plugin, async (targetDict) => {
+      this.dictName = targetDict.name;
+      this.dict = null;
+      await this.render();
+    }).open();
   }
 
   // ── Paradigms Tab ──
@@ -2879,14 +3219,54 @@ class ConlangDictionaryPlugin extends obsidian.Plugin {
   border-bottom:1px solid var(--background-modifier-border); background:var(--background-primary);
   color:var(--text-normal); font-size:13px; outline:none; }
 .conlang-sc-rules  { padding:4px; }
-.conlang-sc-rulehdr{ display:grid; grid-template-columns:1fr 1fr 1fr 2fr 30px;
+.conlang-sc-rulehdr{ display:grid; grid-template-columns:20px 1fr 1fr 1fr 2fr 30px;
   gap:4px; padding:3px 4px; font-size:10px; text-transform:uppercase;
   color:var(--text-muted); font-weight:600; }
-.conlang-sc-rule   { display:grid; grid-template-columns:1fr 1fr 1fr 2fr 30px;
+.conlang-sc-rule   { display:grid; grid-template-columns:20px 1fr 1fr 1fr 2fr 30px;
   gap:4px; padding:2px 4px; border-bottom:1px solid var(--background-modifier-border); }
 .conlang-sc-inp    { padding:3px 6px; border:1px solid var(--background-modifier-border);
   border-radius:3px; background:var(--background-primary); color:var(--text-normal); font-size:12px; width:100%; }
 .conlang-sc-addrule { margin:6px; font-size:12px; }
+
+/* ── Drag & drop ── */
+.conlang-sc-drag-handle { cursor:grab; color:var(--text-muted); user-select:none;
+  padding:0 2px; font-size:14px; display:flex; align-items:center; }
+.conlang-sc-drag-handle:active { cursor:grabbing; }
+.conlang-sc-rule.is-dragging { opacity:0.4; }
+.conlang-sc-rule.drag-over { border-top:2px solid var(--interactive-accent); }
+
+/* ── SC help panel ── */
+.conlang-sc-help { margin:6px 8px 10px; border:1px solid var(--background-modifier-border);
+  border-radius:6px; padding:4px 12px; }
+.conlang-sc-help summary { cursor:pointer; font-weight:600; font-size:13px;
+  color:var(--text-muted); padding:4px 0; }
+.conlang-sc-help-table { font-size:12px; margin:8px 0; }
+.conlang-sc-help-table td { padding:2px 8px; }
+.conlang-sc-help-table code { background:var(--background-modifier-form-field);
+  padding:1px 4px; border-radius:2px; font-size:11px; }
+
+/* ── Sound Change Preview modal ── */
+.conlang-sc-preview-rules { margin-bottom:12px; }
+.conlang-sc-preview-rules ol { font-family:monospace; font-size:13px; padding-left:20px; }
+.conlang-sc-preview-rule { margin:2px 0; }
+.conlang-sc-warn { color:var(--text-warning,#e8a317); font-size:12px; margin:4px 0 8px; }
+
+/* ── Apply SC modal ── */
+.conlang-sc-apply-sec { margin:10px 0; padding:8px 12px;
+  border:1px solid var(--background-modifier-border); border-radius:6px; }
+.conlang-sc-apply-row { margin-top:6px; font-size:13px; }
+.conlang-sc-apply-sel { padding:3px 6px; border-radius:4px;
+  border:1px solid var(--background-modifier-border);
+  background:var(--background-primary); color:var(--text-normal); font-size:13px; }
+
+/* ── Outdated banner ── */
+.conlang-sc-outdated { background:var(--background-modifier-message,var(--background-secondary));
+  border:1px solid var(--background-modifier-border); border-radius:6px;
+  padding:8px 12px; margin-bottom:10px; font-size:13px; display:flex;
+  align-items:center; gap:10px; flex-wrap:wrap; }
+.conlang-sc-outdated button { padding:3px 10px; font-size:12px; border-radius:4px;
+  cursor:pointer; border:1px solid var(--interactive-accent);
+  background:var(--background-primary); color:var(--interactive-accent); }
 
 /* ── Gender badge ── */
 .conlang-gender-badge { display:inline-block; margin-left:5px; padding:1px 5px; font-size:10px;
